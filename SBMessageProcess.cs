@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 using Google.Cloud.BigQuery.V2;
@@ -9,16 +8,11 @@ using System.Linq;
 using Microsoft.Xrm.Sdk;
 using Microsoft.Xrm.Sdk.Query;
 using Microsoft.Xrm.Tooling.Connector;
-using System.Net.Http;
-using Microsoft.Azure.WebJobs;
-using static System.Net.Mime.MediaTypeNames;
 using System.Text.RegularExpressions;
 using Azure.Messaging.ServiceBus;
 using System.Threading.Tasks;
-using Microsoft.Azure.WebJobs.Host;
-using Microsoft.Crm.Sdk.Messages;
-using System.Runtime.Remoting.Contexts;
-using System.Windows.Controls.Primitives;
+using Microsoft.Azure.Functions.Worker;
+using Microsoft.Extensions.Azure;
 
 namespace CRMChangestoBQIntegration
 {
@@ -27,7 +21,7 @@ namespace CRMChangestoBQIntegration
         //private readonly ILogger _logger;
         private static readonly string projectId = Environment.GetEnvironmentVariable("projectId");
         private static readonly string datasetId = Environment.GetEnvironmentVariable("datasetId");
-        private static readonly string prodenvironment = Environment.GetEnvironmentVariable("prodEnvironment");
+        private static readonly string d365Environment = Environment.GetEnvironmentVariable("d365Environment");
         private static readonly string sUserKey = Environment.GetEnvironmentVariable("userkey");
         private static readonly string sUserPassword = Environment.GetEnvironmentVariable("userpassword");
         private static readonly string clientid = Environment.GetEnvironmentVariable("clientId");
@@ -42,194 +36,220 @@ namespace CRMChangestoBQIntegration
         private static readonly string gtoken_uri = Environment.GetEnvironmentVariable("googlecredentials:token_uri");
         private static readonly string gauth_provider_x509_cert_url = Environment.GetEnvironmentVariable("googlecredentials:auth_provider_x509_cert_url");
         private static readonly string gclient_x509_cert_url = Environment.GetEnvironmentVariable("googlecredentials:client_x509_cert_url");
-        private static ServiceBusSender sbsender;
-        private static ServiceBusClient sbclient;
         private static readonly string sbconnection = Environment.GetEnvironmentVariable("sbconnection");
         private static readonly string sbtopicname = Environment.GetEnvironmentVariable("sbtopicname");
-
-        //public SBMessageProcess(ILoggerFactory loggerFactory)
-        //{
-        //    _logger = loggerFactory.CreateLogger<SBMessageProcess>();
-        //}
+        private static ServiceBusSender sbsender;
+        private static ServiceBusClient sbclient;
+        private static ILogger _logger;
+        
 
         [Function("SBMessageProcess")]
-        public static async Task Run([ServiceBusTrigger("datafromcrm", "subscriptionbq-pr", Connection = "sbconnection")] string SbMsg, FunctionContext context)
+        public static async Task Run([ServiceBusTrigger("datafromcrm", "subscriptionbq-pr", Connection = "sbconnection")] string serviceBusMessage, FunctionContext context)
         {
-            var _logger = context.GetLogger(nameof(SBMessageProcess));
-            _logger.LogInformation($"C# ServiceBus topic trigger function processed message: {SbMsg}");
-            dynamic lparsedmsg = JsonConvert.DeserializeObject(SbMsg);
-
-            _logger.LogInformation($" message name: {lparsedmsg.MessageName}");
-            _logger.LogInformation($" Primary Entity ID: {lparsedmsg.PrimaryEntityId}");
-            _logger.LogInformation($" Primary Entity Name: {lparsedmsg.PrimaryEntityName}");
-
-            string msgtype = lparsedmsg.MessageName;
-            string entityID = lparsedmsg.PrimaryEntityId;
-            string entityName = lparsedmsg.PrimaryEntityName;
-            string primarykey = entityName + "id";
-
-            //Start Connect Big Query
-            var param = new JsonCredentialParameters
-            {
-                Type = gtype,
-                ProjectId = gproject_id,
-                PrivateKeyId = gprivate_key_id,
-                PrivateKey = gprivate_key, //privateKey.Replace("\\n", "\n"),
-                ClientEmail = gclient_email,
-                ClientId = gclient_id,
-                TokenUrl = gtoken_uri
-            };
-            var googlecredentials = GoogleCredential.FromJsonParameters(param);
-            BigQueryClient client = BigQueryClient.Create(projectId, googlecredentials);
-            string queryBQ = $"SELECT column_name FROM `{projectId}.{datasetId}.INFORMATION_SCHEMA.COLUMNS` WHERE table_name = '{entityName}' ORDER BY column_name";
-            BigQueryResults results = client.ExecuteQuery(queryBQ, parameters: null);
-            List<string> fields = new List<string>();
-            foreach (var col in results)
-            {
-                fields.Add(col["column_name"].ToString().ToLower());
-            }
-            List<BigQueryTable> tables = client.ListTables(datasetId).ToList();
-            bool isTableinBQ = false;
-            foreach (BigQueryTable table in tables)
-            {
-                if (table.ToString().Contains(entityName))
-                {
-                    isTableinBQ = true;
-                    break; }
-            }
-            if (isTableinBQ == false) return;
-            //End Connect Big Query
-
-            //Start Connect CRM
-            var svc = new CrmServiceClient($@"AuthType=ClientSecret;url={prodenvironment};ClientId={clientid};ClientSecret={clientsecret}");
-
-            Entity entityRecord = new Entity();
-            var optionsetcols = new Dictionary<String, object>();
-
+            _logger = context.GetLogger(nameof(SBMessageProcess));
+            int minutesToWait = 30; //set the waiting time that service bus holds message
+            sbclient = new ServiceBusClient(sbconnection);
+            sbsender = sbclient.CreateSender(sbtopicname);
+            
             try
             {
-                //using (var svc = new CrmServiceClient(constr))
-                //{
-                    if ((svc.IsReady || svc != null) && (msgtype != "Delete"))
+
+                _logger.LogInformation($"messageBody: {serviceBusMessage}");
+                dynamic lparsedmsg = JsonConvert.DeserializeObject(serviceBusMessage);
+
+                _logger.LogInformation($" message name: {lparsedmsg.MessageName}");
+                _logger.LogInformation($" Primary Entity ID: {lparsedmsg.PrimaryEntityId}");
+                _logger.LogInformation($" Primary Entity Name: {lparsedmsg.PrimaryEntityName}");
+
+                string msgtype = lparsedmsg.MessageName;
+                string entityID = lparsedmsg.PrimaryEntityId;
+                string entityName = lparsedmsg.PrimaryEntityName;
+                string primarykey = entityName + "id";
+
+                
+
+                //Start Connect Big Query
+                var param = new JsonCredentialParameters
+                {
+                    Type = gtype,
+                    ProjectId = gproject_id,
+                    PrivateKeyId = gprivate_key_id,
+                    PrivateKey = gprivate_key,
+                    ClientEmail = gclient_email,
+                    ClientId = gclient_id,
+                    TokenUrl = gtoken_uri
+                };
+                var googlecredentials = GoogleCredential.FromJsonParameters(param);
+                BigQueryClient client = BigQueryClient.Create(projectId, googlecredentials);
+                _logger.LogInformation($" BigQueryClient initiated for projectId {projectId}");
+
+                List<BigQueryTable> tables = client.ListTables(datasetId).ToList();
+                bool isTableinBQ = false;
+                foreach (BigQueryTable table in tables)
+                {
+                    if (table.ToString().Contains(entityName))
                     {
-                        Guid entId = new Guid(entityID);
-                        if (msgtype != "Delete")
+                        isTableinBQ = true;
+                        break;
+                    }
+                }
+                if (isTableinBQ == false) return;
+                try
+                {
+
+                    var row = new BigQueryInsertRow();
+                    var dRow = new Dictionary<string, object>();
+                    if (msgtype != "Delete")
+                    {
+                        string queryBQ = $"SELECT column_name FROM `{projectId}.{datasetId}.INFORMATION_SCHEMA.COLUMNS` WHERE table_name = '{entityName}' ORDER BY column_name";
+                        var results = client.CreateQueryJob(queryBQ, parameters: null).PollUntilCompleted();
+                        List<string> fields = new List<string>();
+
+                        foreach (var col in results.GetQueryResults())
                         {
-                            entityRecord = svc.Retrieve(entityName, entId, new ColumnSet(true));
-                            foreach (var attribute in entityRecord.Attributes)
+                            fields.Add(col["column_name"].ToString().ToLower());
+                        }
+
+                        _logger.LogInformation($" {fields.Count} column names loaded...");
+
+                        var lattributes = lparsedmsg.InputParameters[0].value.Attributes;
+
+                        _logger.LogInformation($"Entity {entityName} with id {entityID} retrieved...");
+
+                        var entityRecord = GetEntity(entityID, entityName);
+
+                        _logger.LogInformation($"Entity retrieved...");
+                        foreach (var attribute in lattributes)
+                        {
+                            if (fields.Contains(attribute.key.ToString()))
                             {
-                                //if (((KeyValuePair<string, object>)attribute).Value.ToString()== "Microsoft.Xrm.Sdk.OptionSetValue")
-                                if (attribute.Value != null && attribute.Value.ToString().Contains("OptionSetValue"))
+                                var cKey = attribute.key.ToString();
+                                var cValue = GetValueForAttribute(attribute, entityRecord.FormattedValues);
+
+                                if (cValue != null && cKey == entityName + "id")
                                 {
-                                    var ckey = ((KeyValuePair<string, object>)attribute).Key;
-                                    var cvalue = ((Microsoft.Xrm.Sdk.OptionSetValue)((KeyValuePair<string, object>)attribute).Value).Value;
-                                    var clabel = entityRecord.FormattedValues[ckey];
-                                    optionsetcols.Add(ckey,clabel);
+                                    dRow.Add(cKey, cValue);
+                                    dRow.Add("id", cValue);
+
+                                }
+                                else if (cValue != null)
+                                {
+                                    dRow.Add(cKey, cValue);
                                 }
                             }
+
                         }
-
                     }
-                //}
-                //End Connect CRM
+                    string bQuery = "";
 
-                dynamic lattributes = lparsedmsg.InputParameters[0].value.Attributes;
-                var row = new BigQueryInsertRow();
-                var drow = new Dictionary<String, Object>();
-                string bQuery = "";
-
-                if (msgtype != "Delete")
-                {
-                    foreach (dynamic attribute in lattributes)
+                    if (msgtype == "Create")
                     {
-                        if (fields.Contains(attribute.key.ToString()))
+                        row.Add(dRow);
+                        client.InsertRow(projectId, datasetId, entityName, row, null);
+                    }
+                    else if (msgtype == "Update")
+                    {
+                        try
                         {
-                            var cKey = attribute.key.ToString();
-                            var cValue = GetValueForAttribute(attribute, entityName, msgtype, optionsetcols);
-                            if (cValue != null && cKey == primarykey)
+                            bQuery = $"Update `{projectId}.{datasetId}.{entityName}` set {string.Join(",", dRow.Select(k => $"{k.Key} = '{k.Value}'"))} where {primarykey} = '{entityID}'";
+
+                            BigQueryParameter[] parameters = null;
+                            var result = client.ExecuteQuery(bQuery, parameters);
+
+                        }
+                        catch (Exception ex)
+                        {
+                            if (ex.Message.Contains("affect rows in the streaming buffer"))
                             {
-                                drow.Add(cKey, cValue);
-                                drow.Add("id", cValue);
+                                var clonedsbmsg = new ServiceBusMessage(serviceBusMessage)
+                                {
+                                    ScheduledEnqueueTime = DateTime.UtcNow.AddMinutes(minutesToWait)
+                                };
+                                await sbsender.ScheduleMessageAsync(clonedsbmsg, clonedsbmsg.ScheduledEnqueueTime);
+                                _logger.LogInformation($"Successfully scheduled {lparsedmsg.MessageId} in the queue");
                             }
-                            else if (cValue != null)
+                            else
                             {
-                                drow.Add(cKey, cValue);
+                                _logger.LogCritical($"ServiceBus topic trigger function - See message :- {ex.Message}");
+                                throw;
+                            }
+
+                        }
+                    }
+                    else if (msgtype == "Delete")
+                    {
+                        try
+                        {
+                            bQuery = $"Delete from `{projectId}.{datasetId}.{entityName}` where Id = '{entityID}'";
+                            BigQueryParameter[] parameters = null;
+                            var result = client.ExecuteQuery(bQuery, parameters);
+                        }
+                        catch (Exception ex)
+                        {
+                            if (ex.Message.Contains("affect rows in the streaming buffer"))
+                            {
+                                var clonedsbmsg = new ServiceBusMessage(serviceBusMessage)
+                                {
+                                    ScheduledEnqueueTime = DateTime.UtcNow.AddMinutes(minutesToWait)
+                                };
+                                await sbsender.ScheduleMessageAsync(clonedsbmsg, clonedsbmsg.ScheduledEnqueueTime);
+                            }
+                            else
+                            {
+                                _logger.LogInformation($"Successfully scheduled {lparsedmsg.MessageId} in the queue");
+                                _logger.LogCritical($"ServiceBus topic trigger function - See message :- {ex.Message}");
+                                throw;
                             }
                         }
                     }
-                }
-                if (msgtype == "Create")
-                {
-                    row.Add(drow);
-                    client.InsertRow(projectId, datasetId, entityName, row, null);
-                    //sQuery = $"insert into dbo.crm_{entityName} (Id,{string.Join(",", sqlDictionary.Keys.Select(k => $"[{k}]"))}) values (@Id,{string.Join(",", sqlDictionary.Keys.Select(k => $"@{k}"))})";
-                }
-                else if (msgtype == "Update")
-                {
-                    try
-                    {
-                        bQuery = $"Update `{projectId}.{datasetId}.{entityName}` set {string.Join(",", drow.Select(k => $"{k.Key} = '{k.Value}'"))} where {primarykey} = '{entityID}'";
-                        BigQueryParameter[] parameters = null;
-                        BigQueryResults result = client.ExecuteQuery(bQuery, parameters);
 
-                    }
-                    catch (Exception ex)
-                    {
-                        if (ex.Message.Contains("affect rows in the streaming buffer"))
-                        {
-                            int minutesToWait = 90; //set the waiting time that service bus holds message
-                            sbclient = new ServiceBusClient(sbconnection);
-                            sbsender = sbclient.CreateSender(sbtopicname);
-                            ServiceBusMessage sbm = new ServiceBusMessage();
-                            var clonedsbmsg = new ServiceBusMessage(SbMsg);
-                            clonedsbmsg.ScheduledEnqueueTime = DateTime.UtcNow.AddMinutes(minutesToWait);
-                            await sbsender.ScheduleMessageAsync(clonedsbmsg, clonedsbmsg.ScheduledEnqueueTime);
-                            _logger.LogInformation($"Successfully scheduled {lparsedmsg.MessageId} in the queue");
-                        }
-                        else
-                        {
-                            _logger.LogCritical($"ServiceBus topic trigger function - See message :- {ex.Message}");
-                        }
-                    }
                 }
-                else if (msgtype == "Delete")
+                catch (JsonSerializationException e)
                 {
-                    try { 
-                    bQuery = $"Delete from `{projectId}.{datasetId}.{entityName}` where Id = '{entityID}'";
-                    BigQueryParameter[] parameters = null;
-                    BigQueryResults result = client.ExecuteQuery(bQuery, parameters);
-                    }
-                    catch (Exception ex)
-                    {
-                        int minutesToWait = 90; //set the waiting time that service bus holds message
-                        sbclient = new ServiceBusClient(sbconnection);
-                        sbsender = sbclient.CreateSender(sbtopicname);
-                        ServiceBusMessage sbm = new ServiceBusMessage();
-                        var clonedsbmsg = new ServiceBusMessage(SbMsg);
-                        clonedsbmsg.ScheduledEnqueueTime = DateTime.UtcNow.AddMinutes(minutesToWait);
-                        await sbsender.ScheduleMessageAsync(clonedsbmsg, clonedsbmsg.ScheduledEnqueueTime);
-                        _logger.LogInformation($"Successfully scheduled {lparsedmsg.MessageId} in the queue");
-                        _logger.LogCritical($"ServiceBus topic trigger function - See message :- {ex.Message}");
-                    }
+                    _logger.LogCritical($"Entity Name: {entityName}");
+                    _logger.LogCritical(e.ToString());
+                    throw;
                 }
-
-            }
-            catch (JsonSerializationException e)
-            {
-                _logger.LogCritical($"Entity Name: {entityName}");
-                _logger.LogCritical(e.ToString());
-                throw e;
+                catch (Exception ex)
+                {
+                    _logger.LogCritical($"Entity Name: {entityName}");
+                    _logger.LogCritical(ex.ToString());
+                    throw;
+                }
             }
             catch (Exception ex)
             {
-                _logger.LogCritical($"Entity Name: {entityName}");
-                _logger.LogCritical(ex.ToString());
-                throw ex;
+                //try
+                //{
+                //    if (ex.Message.Contains("Too many DML statements outstanding against table"))
+                //    {
+                //        throw;
+                //    }
+                //    else
+                //    {
+                //        Dead - letter the message
+                //    _logger.LogInformation($"Message Id: {message.MessageId}");
+                //        _logger.LogInformation($"Lock token: {message.LockToken}");
+                //        await sbclient.CreateReceiver("datafromcrm", "subscriptionbq-pr").DeadLetterMessageAsync(message, "Exception", ex.Message);
+                //        _logger.LogError($"Message dead-lettered due to exception: {ex.Message}");
+                //    }
+                //}
+                //catch (Exception deadLetterEx)
+                //{
+                //    _logger.LogCritical($"Failed to dead-letter message: {deadLetterEx.Message}");
+                //    throw;
+                //}
             }
         }
-        private static dynamic GetValueForAttribute(dynamic attribute, dynamic entityname, string msgType, Dictionary<String, object> coldictionary)
+        private static dynamic GetValueForAttribute(dynamic attribute, FormattedValueCollection coldictionary)
         {
-            try {
+            if (attribute == null || attribute.value == null)
+            {
+                _logger.LogWarning("Attribute or attribute value is null.");
+                return null;
+            }
+            try
+            {
                 var emptyJValue = new Newtonsoft.Json.Linq.JValue("");
                 if (attribute.value is Newtonsoft.Json.Linq.JValue)
                 {
@@ -261,16 +281,8 @@ namespace CRMChangestoBQIntegration
                     if (((string)attribute.value.__type).StartsWith("OptionSetValue"))
                     {
                         string attName = ((Newtonsoft.Json.Linq.JValue)((Newtonsoft.Json.Linq.JProperty)((Newtonsoft.Json.Linq.JContainer)attribute).First).Value).Value.ToString();
-                        object osLabel = null;
-                        foreach (var element in coldictionary)
-                        {
-                            if (String.Equals(element.Key, attName))
-                            {
-                                osLabel = element.Value;
-                                break;
-                            }
-                        }
-                        //if (coldictionary.TryGetValue(attName, out osLabel))
+                        var osLabel = coldictionary[attribute.key.Value];
+
                         if (osLabel != null)
                         {
                             return osLabel;
@@ -305,26 +317,45 @@ namespace CRMChangestoBQIntegration
                     }
                 }
             }
-            catch(Exception ex) {
-                return null;
+            catch (Exception ex)
+            {
+                throw;
             }
         }
-        public static async Task SBMessagePush(dynamic message, dynamic messagesender,int minutesToWait)
+
+        private static Entity GetEntity(string entityId, string entityName)
+        {
+            using (var svc = new CrmServiceClient($@"AuthType=ClientSecret;Url={d365Environment};ClientId={clientid};ClientSecret={clientsecret}"))
+            {
+
+                var entId = new Guid(entityId);
+
+                var entity = svc.Retrieve(entityName, entId, new ColumnSet(true));
+                _logger.LogInformation($"Entity - {entity.Id} retrieved...");
+                return entity;
+
+            }
+
+        }
+
+        
+        public static async Task SBMessagePush(dynamic message, dynamic messagesender, int minutesToWait)
         {
             try
             {
-
-                var clonedsbmsg = new ServiceBusMessage(message.Body);
-                clonedsbmsg.ScheduledEnqueueTime = DateTime.UtcNow.AddMinutes(minutesToWait);
+                var clonedsbmsg = new ServiceBusMessage(message.Body)
+                {
+                    ScheduledEnqueueTime = DateTime.UtcNow.AddMinutes(minutesToWait)
+                };
                 await messagesender.ScheduleMessageAsync(clonedsbmsg, clonedsbmsg.ScheduledEnqueueTime);
-                //log.LogInformation($"Successfully scheduled {message.MessageId} in the queue");
 
             }
             catch (Exception ex)
             {
-                //log.LogCritical($"ServiceBus topic trigger function - See error message :- {exception.Message}");
                 throw;
             }
         }
+
+
     }
 }
