@@ -41,7 +41,7 @@ namespace CRMChangestoBQIntegration
         private static ServiceBusSender sbsender;
         private static ServiceBusClient sbclient;
         private static ILogger _logger;
-        
+
 
         [Function("SBMessageProcess")]
         public static async Task Run([ServiceBusTrigger("datafromcrm", "subscriptionbq-pr", Connection = "sbconnection")] string serviceBusMessage, FunctionContext context)
@@ -50,196 +50,188 @@ namespace CRMChangestoBQIntegration
             int minutesToWait = 30; //set the waiting time that service bus holds message
             sbclient = new ServiceBusClient(sbconnection);
             sbsender = sbclient.CreateSender(sbtopicname);
-            
+
+            //try
+            //{
+
+            _logger.LogInformation($"messageBody: {serviceBusMessage}");
+            dynamic lparsedmsg = JsonConvert.DeserializeObject(serviceBusMessage);
+
+            _logger.LogInformation($" message name: {lparsedmsg.MessageName}");
+            _logger.LogInformation($" Primary Entity ID: {lparsedmsg.PrimaryEntityId}");
+            _logger.LogInformation($" Primary Entity Name: {lparsedmsg.PrimaryEntityName}");
+
+            string msgtype = lparsedmsg.MessageName;
+            string entityID = lparsedmsg.PrimaryEntityId;
+            string entityName = lparsedmsg.PrimaryEntityName;
+            string primarykey = entityName + "id";
+
+
+
+            //Start Connect Big Query
+            var param = new JsonCredentialParameters
+            {
+                Type = gtype,
+                ProjectId = gproject_id,
+                PrivateKeyId = gprivate_key_id,
+                PrivateKey = gprivate_key,
+                ClientEmail = gclient_email,
+                ClientId = gclient_id,
+                TokenUrl = gtoken_uri
+            };
+            var googlecredentials = GoogleCredential.FromJsonParameters(param);
+            BigQueryClient client = BigQueryClient.Create(projectId, googlecredentials);
+            _logger.LogInformation($" BigQueryClient initiated for projectId {projectId}");
+
+            List<BigQueryTable> tables = client.ListTables(datasetId).ToList();
+            bool isTableinBQ = false;
+            foreach (BigQueryTable table in tables)
+            {
+                if (table.ToString().Contains(entityName))
+                {
+                    isTableinBQ = true;
+                    break;
+                }
+            }
+            if (isTableinBQ == false) return;
             try
             {
 
-                _logger.LogInformation($"messageBody: {serviceBusMessage}");
-                dynamic lparsedmsg = JsonConvert.DeserializeObject(serviceBusMessage);
-
-                _logger.LogInformation($" message name: {lparsedmsg.MessageName}");
-                _logger.LogInformation($" Primary Entity ID: {lparsedmsg.PrimaryEntityId}");
-                _logger.LogInformation($" Primary Entity Name: {lparsedmsg.PrimaryEntityName}");
-
-                string msgtype = lparsedmsg.MessageName;
-                string entityID = lparsedmsg.PrimaryEntityId;
-                string entityName = lparsedmsg.PrimaryEntityName;
-                string primarykey = entityName + "id";
-
-                
-
-                //Start Connect Big Query
-                var param = new JsonCredentialParameters
+                var row = new BigQueryInsertRow();
+                var dRow = new Dictionary<string, object>();
+                if (msgtype != "Delete")
                 {
-                    Type = gtype,
-                    ProjectId = gproject_id,
-                    PrivateKeyId = gprivate_key_id,
-                    PrivateKey = gprivate_key,
-                    ClientEmail = gclient_email,
-                    ClientId = gclient_id,
-                    TokenUrl = gtoken_uri
-                };
-                var googlecredentials = GoogleCredential.FromJsonParameters(param);
-                BigQueryClient client = BigQueryClient.Create(projectId, googlecredentials);
-                _logger.LogInformation($" BigQueryClient initiated for projectId {projectId}");
+                    string queryBQ = $"SELECT column_name FROM `{projectId}.{datasetId}.INFORMATION_SCHEMA.COLUMNS` WHERE table_name = '{entityName}' ORDER BY column_name";
+                    var results = client.CreateQueryJob(queryBQ, parameters: null).PollUntilCompleted();
+                    List<string> fields = new List<string>();
 
-                List<BigQueryTable> tables = client.ListTables(datasetId).ToList();
-                bool isTableinBQ = false;
-                foreach (BigQueryTable table in tables)
-                {
-                    if (table.ToString().Contains(entityName))
+                    foreach (var col in results.GetQueryResults())
                     {
-                        isTableinBQ = true;
-                        break;
+                        fields.Add(col["column_name"].ToString().ToLower());
+                    }
+
+                    _logger.LogInformation($" {fields.Count} column names loaded...");
+
+                    var lattributes = lparsedmsg.InputParameters[0].value.Attributes;
+
+                    _logger.LogInformation($"Entity {entityName} with id {entityID} retrieved...");
+
+                    var entityRecord = GetEntity(entityID, entityName);
+
+                    _logger.LogInformation($"Entity retrieved...");
+                    foreach (var attribute in lattributes)
+                    {
+                        if (fields.Contains(attribute.key.ToString()))
+                        {
+                            var cKey = attribute.key.ToString();
+                            var cValue = GetValueForAttribute(attribute, entityRecord.FormattedValues);
+
+                            if (cValue != null && cKey == entityName + "id")
+                            {
+                                dRow.Add(cKey, cValue);
+                                dRow.Add("id", cValue);
+
+                            }
+                            else if (cValue != null)
+                            {
+                                dRow.Add(cKey, cValue);
+                            }
+                        }
+
                     }
                 }
-                if (isTableinBQ == false) return;
-                try
+                string bQuery = "";
+
+                if (msgtype == "Create")
                 {
-
-                    var row = new BigQueryInsertRow();
-                    var dRow = new Dictionary<string, object>();
-                    if (msgtype != "Delete")
-                    {
-                        string queryBQ = $"SELECT column_name FROM `{projectId}.{datasetId}.INFORMATION_SCHEMA.COLUMNS` WHERE table_name = '{entityName}' ORDER BY column_name";
-                        var results = client.CreateQueryJob(queryBQ, parameters: null).PollUntilCompleted();
-                        List<string> fields = new List<string>();
-
-                        foreach (var col in results.GetQueryResults())
-                        {
-                            fields.Add(col["column_name"].ToString().ToLower());
-                        }
-
-                        _logger.LogInformation($" {fields.Count} column names loaded...");
-
-                        var lattributes = lparsedmsg.InputParameters[0].value.Attributes;
-
-                        _logger.LogInformation($"Entity {entityName} with id {entityID} retrieved...");
-
-                        var entityRecord = GetEntity(entityID, entityName);
-
-                        _logger.LogInformation($"Entity retrieved...");
-                        foreach (var attribute in lattributes)
-                        {
-                            if (fields.Contains(attribute.key.ToString()))
-                            {
-                                var cKey = attribute.key.ToString();
-                                var cValue = GetValueForAttribute(attribute, entityRecord.FormattedValues);
-
-                                if (cValue != null && cKey == entityName + "id")
-                                {
-                                    dRow.Add(cKey, cValue);
-                                    dRow.Add("id", cValue);
-
-                                }
-                                else if (cValue != null)
-                                {
-                                    dRow.Add(cKey, cValue);
-                                }
-                            }
-
-                        }
-                    }
-                    string bQuery = "";
-
-                    if (msgtype == "Create")
-                    {
-                        row.Add(dRow);
-                        client.InsertRow(projectId, datasetId, entityName, row, null);
-                    }
-                    else if (msgtype == "Update")
-                    {
-                        try
-                        {
-                            bQuery = $"Update `{projectId}.{datasetId}.{entityName}` set {string.Join(",", dRow.Select(k => $"{k.Key} = '{k.Value}'"))} where {primarykey} = '{entityID}'";
-
-                            BigQueryParameter[] parameters = null;
-                            var result = client.ExecuteQuery(bQuery, parameters);
-
-                        }
-                        catch (Exception ex)
-                        {
-                            if (ex.Message.Contains("affect rows in the streaming buffer"))
-                            {
-                                var clonedsbmsg = new ServiceBusMessage(serviceBusMessage)
-                                {
-                                    ScheduledEnqueueTime = DateTime.UtcNow.AddMinutes(minutesToWait)
-                                };
-                                await sbsender.ScheduleMessageAsync(clonedsbmsg, clonedsbmsg.ScheduledEnqueueTime);
-                                _logger.LogInformation($"Successfully scheduled {lparsedmsg.MessageId} in the queue");
-                            }
-                            else
-                            {
-                                _logger.LogCritical($"ServiceBus topic trigger function - See message :- {ex.Message}");
-                                throw;
-                            }
-
-                        }
-                    }
-                    else if (msgtype == "Delete")
-                    {
-                        try
-                        {
-                            bQuery = $"Delete from `{projectId}.{datasetId}.{entityName}` where Id = '{entityID}'";
-                            BigQueryParameter[] parameters = null;
-                            var result = client.ExecuteQuery(bQuery, parameters);
-                        }
-                        catch (Exception ex)
-                        {
-                            if (ex.Message.Contains("affect rows in the streaming buffer"))
-                            {
-                                var clonedsbmsg = new ServiceBusMessage(serviceBusMessage)
-                                {
-                                    ScheduledEnqueueTime = DateTime.UtcNow.AddMinutes(minutesToWait)
-                                };
-                                await sbsender.ScheduleMessageAsync(clonedsbmsg, clonedsbmsg.ScheduledEnqueueTime);
-                            }
-                            else
-                            {
-                                _logger.LogInformation($"Successfully scheduled {lparsedmsg.MessageId} in the queue");
-                                _logger.LogCritical($"ServiceBus topic trigger function - See message :- {ex.Message}");
-                                throw;
-                            }
-                        }
-                    }
-
+                    row.Add(dRow);
+                    client.InsertRow(projectId, datasetId, entityName, row, null);
                 }
-                catch (JsonSerializationException e)
+                else if (msgtype == "Update")
                 {
-                    _logger.LogCritical($"Entity Name: {entityName}");
-                    _logger.LogCritical(e.ToString());
-                    throw;
+                    try
+                    {
+                        bQuery = $"Update `{projectId}.{datasetId}.{entityName}` set {string.Join(",", dRow.Select(k => $"{k.Key} = '{k.Value}'"))} where {primarykey} = '{entityID}'";
+
+                        BigQueryParameter[] parameters = null;
+                        var result = client.ExecuteQuery(bQuery, parameters);
+
+                    }
+                    catch (Exception ex)
+                    {
+                        if (ex.Message.Contains("affect rows in the streaming buffer"))
+                        {
+                            var clonedsbmsg = new ServiceBusMessage(serviceBusMessage)
+                            {
+                                ScheduledEnqueueTime = DateTime.UtcNow.AddMinutes(minutesToWait)
+                            };
+                            await sbsender.ScheduleMessageAsync(clonedsbmsg, clonedsbmsg.ScheduledEnqueueTime);
+                            _logger.LogInformation($"Successfully scheduled {lparsedmsg.MessageId} in the queue");
+                        }
+                        else
+                        {
+                            _logger.LogCritical($"ServiceBus topic trigger function - See message :- {ex.Message}");
+                            throw;
+                        }
+
+                    }
                 }
-                catch (Exception ex)
+                else if (msgtype == "Delete")
                 {
-                    _logger.LogCritical($"Entity Name: {entityName}");
-                    _logger.LogCritical(ex.ToString());
-                    throw;
+                    try
+                    {
+                        bQuery = $"Delete from `{projectId}.{datasetId}.{entityName}` where Id = '{entityID}'";
+                        BigQueryParameter[] parameters = null;
+                        var result = client.ExecuteQuery(bQuery, parameters);
+                    }
+                    catch (Exception ex)
+                    {
+                        if (ex.Message.Contains("affect rows in the streaming buffer"))
+                        {
+                            var clonedsbmsg = new ServiceBusMessage(serviceBusMessage)
+                            {
+                                ScheduledEnqueueTime = DateTime.UtcNow.AddMinutes(minutesToWait)
+                            };
+                            await sbsender.ScheduleMessageAsync(clonedsbmsg, clonedsbmsg.ScheduledEnqueueTime);
+                        }
+                        else
+                        {
+                            _logger.LogInformation($"Successfully scheduled {lparsedmsg.MessageId} in the queue");
+                            _logger.LogCritical($"ServiceBus topic trigger function - See message :- {ex.Message}");
+                            throw;
+                        }
+                    }
                 }
+
+            }
+            catch (JsonSerializationException e)
+            {
+                _logger.LogCritical($"Entity Name: {entityName}");
+                _logger.LogCritical(e.ToString());
+                throw;
             }
             catch (Exception ex)
             {
-                //try
-                //{
-                //    if (ex.Message.Contains("Too many DML statements outstanding against table"))
-                //    {
-                //        throw;
-                //    }
-                //    else
-                //    {
-                //        Dead - letter the message
-                //    _logger.LogInformation($"Message Id: {message.MessageId}");
-                //        _logger.LogInformation($"Lock token: {message.LockToken}");
-                //        await sbclient.CreateReceiver("datafromcrm", "subscriptionbq-pr").DeadLetterMessageAsync(message, "Exception", ex.Message);
-                //        _logger.LogError($"Message dead-lettered due to exception: {ex.Message}");
-                //    }
-                //}
-                //catch (Exception deadLetterEx)
-                //{
-                //    _logger.LogCritical($"Failed to dead-letter message: {deadLetterEx.Message}");
-                //    throw;
-                //}
+                _logger.LogCritical($"Entity Name: {entityName}");
+                _logger.LogCritical(ex.ToString());
+                throw;
             }
+            //}
+            //catch (Exception ex)
+            //{
+            //    try
+            //    {
+            //        if (!ex.Message.Contains("Too many DML statements outstanding against table"))
+            //        {
+            //            throw;
+            //        }                    
+            //    }
+            //    catch (Exception deadLetterEx)
+            //    {
+            //        _logger.LogCritical($"Failed to dead-letter message: {deadLetterEx.Message}");
+            //        throw;
+            //    }
+            //}
         }
         private static dynamic GetValueForAttribute(dynamic attribute, FormattedValueCollection coldictionary)
         {
