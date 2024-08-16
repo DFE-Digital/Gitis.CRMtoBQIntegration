@@ -1,18 +1,16 @@
 {
   "version": "2.0",
-  "extensions": {
-    "serviceBus": {
-      "messageHandlerOptions": {
-        "maxConcurrentCalls": 1
-      }
-    }
-  },
   "logging": {
     "applicationInsights": {
       "samplingSettings": {
         "isEnabled": true,
         "excludedTypes": "Request"
       }
+    }
+  },
+  "serviceBus": {
+    "messageHandlerOptions": {
+      "maxConcurrentCalls": 1
     }
   }
 }
