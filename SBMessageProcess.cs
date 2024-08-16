@@ -13,6 +13,7 @@ using Azure.Messaging.ServiceBus;
 using System.Threading.Tasks;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Azure;
+using System.Threading;
 
 namespace CRMChangestoBQIntegration
 {
@@ -37,19 +38,18 @@ namespace CRMChangestoBQIntegration
         private static readonly string gauth_provider_x509_cert_url = Environment.GetEnvironmentVariable("googlecredentials:auth_provider_x509_cert_url");
         private static readonly string gclient_x509_cert_url = Environment.GetEnvironmentVariable("googlecredentials:client_x509_cert_url");
         private static readonly string sbconnection = Environment.GetEnvironmentVariable("sbconnection");
-        private static readonly string sbtopicname = Environment.GetEnvironmentVariable("sbtopicname");
-        private static ServiceBusSender sbsender;
-        private static ServiceBusClient sbclient;
+        private static readonly string sbtopicname = Environment.GetEnvironmentVariable("sbtopicname");       
         private static ILogger _logger;
 
+        private static SemaphoreSlim semaphore = new SemaphoreSlim(1, 1);
 
         [Function("SBMessageProcess")]
         public static async Task Run([ServiceBusTrigger("datafromcrm", "subscriptionbq-pr", Connection = "sbconnection")] string serviceBusMessage, FunctionContext context)
         {
             _logger = context.GetLogger(nameof(SBMessageProcess));
             int minutesToWait = 30; //set the waiting time that service bus holds message
-            sbclient = new ServiceBusClient(sbconnection);
-            sbsender = sbclient.CreateSender(sbtopicname);
+            var sbclient = new ServiceBusClient(sbconnection);            
+            var sbsender = sbclient.CreateSender(sbtopicname);
 
             //try
             //{
@@ -152,7 +152,7 @@ namespace CRMChangestoBQIntegration
                     try
                     {
                         bQuery = $"Update `{projectId}.{datasetId}.{entityName}` set {string.Join(",", dRow.Select(k => $"{k.Key} = '{k.Value}'"))} where {primarykey} = '{entityID}'";
-
+                        _logger.LogInformation($"Query: {bQuery}");
                         BigQueryParameter[] parameters = null;
                         var result = client.ExecuteQuery(bQuery, parameters);
 
@@ -181,6 +181,7 @@ namespace CRMChangestoBQIntegration
                     try
                     {
                         bQuery = $"Delete from `{projectId}.{datasetId}.{entityName}` where Id = '{entityID}'";
+                        _logger.LogInformation($"Query: {bQuery}");
                         BigQueryParameter[] parameters = null;
                         var result = client.ExecuteQuery(bQuery, parameters);
                     }
