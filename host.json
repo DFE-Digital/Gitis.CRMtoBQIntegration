@@ -9,8 +9,11 @@
     }
   },
   "serviceBus": {
-    "messageHandlerOptions": {
-      "maxConcurrentCalls": 1
+    "maxConcurrentCalls": 1
+  },
+  "extensions": {
+    "serviceBus": {      
+      "maxConcurrentCalls": 10
     }
   }
 }

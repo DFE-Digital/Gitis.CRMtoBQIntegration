@@ -1,5 +1,7 @@
 using Azure.Messaging.ServiceBus;
+using Google;
 using Google.Apis.Auth.OAuth2;
+using Google.Apis.Bigquery.v2.Data;
 using Google.Cloud.BigQuery.V2;
 using Microsoft.Azure.Amqp.Framing;
 using Microsoft.Azure.Functions.Worker;
@@ -12,6 +14,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
@@ -50,6 +53,8 @@ namespace SendCRMChangesToBQ
         }
 
         [Function(nameof(SBMessageProcess))]
+        //public async Task Run([ServiceBusTrigger("crmtobq", Connection = "sbconnection")] ServiceBusReceivedMessage message,
+        //ServiceBusMessageActions messageActions)
         public async Task Run([ServiceBusTrigger("datafromcrm", "subscriptionbq-pr", Connection = "sbconnection")] ServiceBusReceivedMessage message,
         ServiceBusMessageActions messageActions)
         {
@@ -146,7 +151,7 @@ namespace SendCRMChangesToBQ
                         }
                     }
                     string bQuery = "";
-
+                    int retryCount = 0; int baseDelay = 1000; int maxDelay = 16000;
                     if (msgtype == "Create")
                     {
                         row.Add(dRow);
@@ -156,23 +161,27 @@ namespace SendCRMChangesToBQ
                     {
                         try
                         {
-                            bQuery = $"Update `{projectId}.{datasetId}.{entityName}` set {string.Join(",", dRow.Select(k => $"{k.Key} = '{k.Value}'"))} where {primarykey} = '{entityID}'";
 
-                            BigQueryParameter[] parameters = null;
+                            bQuery = $"Update `{projectId}.{datasetId}.{entityName}` set {string.Join(",", dRow.Select(k => $"{k.Key} = '{k.Value}'"))} where {primarykey} = '{entityID}'";
+                            
+                            BigQueryParameter[] parameters = null;   
+                            
+                           
                             BigQueryJob job = bigQueryClient.CreateQueryJob(bQuery, parameters);
-                            job.PollUntilCompleted();
+                            job.PollUntilCompleted().ThrowOnFatalError();
 
                         }
-                        catch (Exception ex)
+                        catch (GoogleApiException ex)
                         {
-                            if (ex.Message.Contains("affect rows in the streaming buffer"))
-                            {
-                                var clonedsbmsg = new ServiceBusMessage(message.Body.ToString())
-                                {
-                                    ScheduledEnqueueTime = DateTime.UtcNow.AddMinutes(minutesToWait)
-                                };
-                                await sender.ScheduleMessageAsync(clonedsbmsg, clonedsbmsg.ScheduledEnqueueTime);
+                            if (ex.ToString().Contains("would affect rows in the streaming buffer"))
+                            {                              
+                                
+                                await sender.ScheduleMessageAsync(new ServiceBusMessage(message.Body.ToString()) { ContentType = message.ContentType, To = message.To, Subject = message.Subject}, DateTime.UtcNow.AddMinutes(minutesToWait));
                                 _logger.LogInformation($"Successfully scheduled {lparsedmsg.MessageId} in the queue");
+                            }
+                            else if (ex.Error.Code == 409 || ex.ToString().Contains("Too many DML statements outstanding"))
+                            {
+                                await sender.SendMessageAsync(new ServiceBusMessage(message.Body.ToString()));
                             }
                             else
                             {
@@ -188,22 +197,25 @@ namespace SendCRMChangesToBQ
                         {
                             bQuery = $"Delete from `{projectId}.{datasetId}.{entityName}` where Id = '{entityID}'";
                             BigQueryParameter[] parameters = null;
+                            
                             BigQueryJob job = bigQueryClient.CreateQueryJob(bQuery, parameters);
-                            job.PollUntilCompleted();
+                            job.PollUntilCompleted().ThrowOnFatalError();
+
+
                         }
-                        catch (Exception ex)
+                        catch (GoogleApiException ex)
                         {
-                            if (ex.Message.Contains("affect rows in the streaming buffer"))
+                            if (ex.ToString().Contains("would affect rows in the streaming buffer"))
                             {
-                                var clonedsbmsg = new ServiceBusMessage(message.Body.ToString())
-                                {
-                                    ScheduledEnqueueTime = DateTime.UtcNow.AddMinutes(minutesToWait)
-                                };
-                                await sender.ScheduleMessageAsync(clonedsbmsg, clonedsbmsg.ScheduledEnqueueTime);
+                                await sender.ScheduleMessageAsync(new ServiceBusMessage(message.Body.ToString()) { ContentType = message.ContentType, To = message.To, Subject = message.Subject }, DateTime.UtcNow.AddMinutes(minutesToWait));
+                                _logger.LogInformation($"Successfully scheduled {lparsedmsg.MessageId} in the queue");
+                            }
+                            else if (ex.Error.Code == 409 || ex.ToString().Contains("Too many DML statements outstanding"))
+                            {
+                                await sender.SendMessageAsync(new ServiceBusMessage(message.Body.ToString()));
                             }
                             else
-                            {
-                                _logger.LogInformation($"Successfully scheduled {lparsedmsg.MessageId} in the queue");
+                            {                               
                                 _logger.LogCritical($"ServiceBus topic trigger function - See message :- {ex.Message}");
                                 throw;
                             }
@@ -239,6 +251,7 @@ namespace SendCRMChangesToBQ
                 catch (Exception deadLetterEx)
                 {
                     _logger.LogCritical($"Failed to dead-letter message: {deadLetterEx.Message}");
+                    throw;
                 }                
 
             }        
