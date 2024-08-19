@@ -63,6 +63,9 @@ namespace SendCRMChangesToBQ
             int minutesToWait = 30; //set the waiting time that service bus holds message
 
             ServiceBusSender sender = _serviceBusClient.CreateSender(sbtopicname);
+            string msgtype = "";
+            string entityID = "";
+            string entityName = "";
             try
             {
                 dynamic lparsedmsg = JsonConvert.DeserializeObject(message.Body.ToString());
@@ -71,9 +74,9 @@ namespace SendCRMChangesToBQ
                 _logger.LogInformation($" Primary Entity ID: {lparsedmsg.PrimaryEntityId}");
                 _logger.LogInformation($" Primary Entity Name: {lparsedmsg.PrimaryEntityName}");
 
-                string msgtype = lparsedmsg.MessageName;
-                string entityID = lparsedmsg.PrimaryEntityId;
-                string entityName = lparsedmsg.PrimaryEntityName;
+                msgtype = lparsedmsg.MessageName;
+                entityID = lparsedmsg.PrimaryEntityId;
+                entityName = lparsedmsg.PrimaryEntityName;
                 string primarykey = entityName + "id";
 
 
@@ -244,7 +247,7 @@ namespace SendCRMChangesToBQ
                 {
                     
                     _logger.LogInformation($"Dead lettering message : {message.MessageId}");
-                    await messageActions.DeadLetterMessageAsync(message, deadLetterReason: "Failure",deadLetterErrorDescription: ex.Message);
+                    await messageActions.DeadLetterMessageAsync(message, deadLetterReason: $"{msgtype} of {entityName} with id {entityID} failed",deadLetterErrorDescription: ex.Message);
                     _logger.LogInformation($"Dead lettered message : {message.MessageId}");
                    
                 }
