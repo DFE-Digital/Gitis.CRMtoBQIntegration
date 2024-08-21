@@ -83,6 +83,7 @@ namespace SendCRMChangesToBQ
 
                 var googlecredentials = GoogleCredential.FromJsonParameters(param);
                 var bigQueryClient = BigQueryClient.Create(projectId, googlecredentials);
+                var table = bigQueryClient.GetTable(datasetId, entityName);
                 _logger.LogInformation($"BigQueryClient initiated for projectId {projectId}");
 
                 try
@@ -95,21 +96,28 @@ namespace SendCRMChangesToBQ
                     {
                         var keyValueFields = context.Fields.ToDictionary(x => x.Key, x => x.Value);
                         row.Add(keyValueFields);
-                        bigQueryClient.InsertRow(projectId, datasetId, entityName, row, null);
+                        table.InsertRow(row);
                     }
                     else if (msgtype == "Update")
                     {
                         try
                         {
-                            var keyValueFields = context.Fields.ToDictionary(x => x.Key, x => x.Value);
-
-                            bQuery = $"Update `{projectId}.{datasetId}.{entityName}` set {string.Join(",", keyValueFields.Select(k => { return k.Value == null ? $"{k.Key} = '{k.Value}'" : k.Value.GetType() == typeof(string) ? $"{k.Key} = '{k.Value}'" : $"{k.Key} = {k.Value}"; }))} where {primarykey} = '{entityID}'";
-                            _logger.LogInformation($"Query : {bQuery}");
+                            bQuery = $"Delete from `{projectId}.{datasetId}.{entityName}` where Id = '{entityID}'";
                             BigQueryParameter[] parameters = null;
 
                             BigQueryJob job = bigQueryClient.CreateQueryJob(bQuery, parameters);
                             job.PollUntilCompleted().ThrowOnFatalError();
 
+                            var keyValueFields = context.Fields.ToDictionary(x => x.Key, x => x.Value);
+
+                            //bQuery = $"Update `{projectId}.{datasetId}.{entityName}` set {string.Join(",", keyValueFields.Select(k => { return k.Value == null ? $"{k.Key} = '{k.Value}'" : k.Value.GetType() == typeof(string) ? $"{k.Key} = '{k.Value}'" : $"{k.Key} = {k.Value}"; }))} where {primarykey} = '{entityID}'";
+                            //_logger.LogInformation($"Query : {bQuery}");
+                            //BigQueryParameter[] parameters = null;
+
+                            //BigQueryJob job = bigQueryClient.CreateQueryJob(bQuery, parameters);
+                            //job.PollUntilCompleted().ThrowOnFatalError();
+                            row.Add(keyValueFields);
+                            table.InsertRow(row);
                         }
                         catch (GoogleApiException ex)
                         {
