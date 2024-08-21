@@ -42,7 +42,7 @@ namespace SendCRMChangesToBQ
         private static readonly string sbconnection = Environment.GetEnvironmentVariable("sbconnection");
         private static readonly string CrmToBqConnection = Environment.GetEnvironmentVariable("CrmToBqConnection");
         private static readonly string sbtopicname = Environment.GetEnvironmentVariable("sbtopicname");
-        public static Dictionary<string, List<string>> bigQueryCache = [];
+        //public static Dictionary<string, List<string>> bigQueryCache = [];
         private readonly ILogger<ValidateData> _logger;
 
         public ValidateData(ILogger<ValidateData> logger)
@@ -99,18 +99,16 @@ namespace SendCRMChangesToBQ
                         case "Create":
                         case "Update":
                             var entityFields = GetEntityAndFields(bigQueryClient, entity);
-                            if (entityFields.Value.Count > 0)
+                            if (entityFields.Count > 0)
                             {
-                                serviceBusBQ = new ServiceBusBQ { MessageType = msgtype, Id = entityID, LogicalName = entityName, Fields = entityFields.Value };
+                                serviceBusBQ = new ServiceBusBQ { MessageType = msgtype, Id = entityID, LogicalName = entityName, Fields = entityFields };
+                                await validatedQueueSender.SendMessageAsync(new ServiceBusMessage(JsonConvert.SerializeObject(serviceBusBQ)));
                             }
                             break;
                         case "Delete":
                             serviceBusBQ = new ServiceBusBQ { MessageType = msgtype, Id = entityID, LogicalName = entityName, Fields = new List<Field>() };
+                            await validatedQueueSender.SendMessageAsync(new ServiceBusMessage(JsonConvert.SerializeObject(serviceBusBQ)));
                             break;
-                    }
-                    if(serviceBusBQ != null)
-                    {
-                        await validatedQueueSender.SendMessageAsync(new ServiceBusMessage(JsonConvert.SerializeObject(serviceBusBQ)));
                     }
                     
                 }
@@ -219,34 +217,31 @@ namespace SendCRMChangesToBQ
                 throw;
             }
         }
-        public static KeyValuePair<string, List<Field>> GetEntityAndFields(BigQueryClient bigQueryClient, Entity entity)
+        public static List<Field> GetEntityAndFields(BigQueryClient bigQueryClient, Entity entity)
         {
             var keyValuePair = new KeyValuePair<string, List<string>>();
-            
-            if (!bigQueryCache.ContainsKey(entity.LogicalName))
-            {
+
+            //if (!bigQueryCache.ContainsKey(entity.LogicalName))
+            //{
                 string queryBQ = $"SELECT column_name FROM `{projectId}.{datasetId}.INFORMATION_SCHEMA.COLUMNS` WHERE table_name = '{entity.LogicalName}' ORDER BY column_name";
-                var results = bigQueryClient.CreateQueryJob(queryBQ, parameters: null).PollUntilCompleted();
+                var results = bigQueryClient.CreateQueryJob(queryBQ, parameters: null).PollUntilCompleted().ThrowOnFatalError();
                 List<string> fields = [];
 
                 if (results.GetQueryResults().TotalRows > 0)
                 {
                     fields = results.GetQueryResults().Select(x => x["column_name"].ToString().ToLower()).ToList();
-                    bigQueryCache.Add(entity.LogicalName, fields);
+                    //bigQueryCache.Add(entity.LogicalName, fields);
                 }
-                else
-                {
-                    return default;
-                }
-                
+
                 keyValuePair = new KeyValuePair<string, List<string>>(entity.LogicalName, fields);
-            }else
-            {
-                keyValuePair = bigQueryCache.FirstOrDefault(x => x.Key == entity.LogicalName);
-            }
+            //}
+            //else
+            //{
+            //    keyValuePair = bigQueryCache.FirstOrDefault(x => x.Key == entity.LogicalName);
+            //}
             var attributeValues = keyValuePair.Value.Where(x => entity.Attributes.Contains(x)).Select(x => { return new Field { Key = x, Value = GetValueForAttribute(x, entity) }; }).ToList();
-            //attributeValues.Add(new Field() { Key = "id", Value = entity.Id.ToString() });
-            return keyValuePair.Equals(default(KeyValuePair<string, List<string>>)) ? default : new KeyValuePair<string, List<Field>>(entity.LogicalName, attributeValues);
+
+            return attributeValues;
         }
 
         public static RemoteContextType DeserializeJsonString<RemoteContextType>(string jsonString)
