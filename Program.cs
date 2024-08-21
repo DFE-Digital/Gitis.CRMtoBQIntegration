@@ -19,23 +19,24 @@ namespace SendCRMChangesToBQ
             {
                 services.AddApplicationInsightsTelemetryWorkerService();
                 services.ConfigureFunctionsApplicationInsights();                
-                services.AddSingleton(serviceProvider =>
-                {
-                    // Retrieve the connection string from environment variables or configuration
-                    var connectionString = Environment.GetEnvironmentVariable("sbconnection");
+                //services.AddSingleton(serviceProvider =>
+                //{
+                //    var connectionString = Environment.GetEnvironmentVariable("sbconnection");
 
-                    // Initialize the ServiceBusClient with custom options if necessary
-                    return new ServiceBusClient(connectionString, new ServiceBusClientOptions
-                    {
-                        TransportType = ServiceBusTransportType.AmqpTcp
-                    });
-                });
+                //    return new ServiceBusClient(connectionString, new ServiceBusClientOptions
+                //    {
+                //        TransportType = ServiceBusTransportType.AmqpTcp
+                //    });
+                //});
             })
-            .ConfigureLogging(logging =>
-            {
-                logging.ClearProviders(); // Clear default logging providers
-                logging.AddConsole(); // Adds console logging
-                logging.SetMinimumLevel(LogLevel.Information); // Set the minimum log level
+            .ConfigureLogging(logging => {
+                logging.Services.Configure<LoggerFilterOptions>(options => {
+                    LoggerFilterRule defaltRule = options.Rules.FirstOrDefault(rule => rule.ProviderName == "Microsoft.Extensions.Logging.ApplicationInsights.ApplicationInsightsLoggerProvider");
+                    if (defaltRule is not null)
+                    {
+                        options.Rules.Remove(defaltRule);
+                    }
+                });
             })
             .Build();
 
