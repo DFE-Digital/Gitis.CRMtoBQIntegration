@@ -119,7 +119,7 @@ namespace SendCRMChangesToBQ
                                 await requeueSender.ScheduleMessageAsync(new ServiceBusMessage(message.Body.ToString()) { ContentType = message.ContentType, To = message.To, Subject = message.Subject }, DateTime.UtcNow.AddMinutes(minutesToWait));
                                 _logger.LogInformation($"Successfully scheduled {message.MessageId} in the queue");
                             }
-                            else if (ex.ToString().Contains("concurrent"))
+                            else if (ex.ToString().Contains("concurrent") || ex.ToString().Contains("DML statements outstanding"))
                             {
                                 await requeueSender.SendMessageAsync(new ServiceBusMessage(message.Body.ToString()));
                             }
@@ -150,7 +150,7 @@ namespace SendCRMChangesToBQ
                                 await requeueSender.ScheduleMessageAsync(new ServiceBusMessage(message.Body.ToString()) { ContentType = message.ContentType, To = message.To, Subject = message.Subject }, DateTime.UtcNow.AddMinutes(minutesToWait));
                                 _logger.LogInformation($"Successfully scheduled {message.MessageId} in the queue");
                             }
-                            else if (ex.ToString().Contains("concurrent"))
+                            else if (ex.ToString().Contains("concurrent") || ex.ToString().Contains("DML statements outstanding"))
                             {
                                 await requeueSender.SendMessageAsync(new ServiceBusMessage(message.Body.ToString()));
                             }
