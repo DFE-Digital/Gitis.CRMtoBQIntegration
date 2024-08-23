@@ -6,6 +6,8 @@ using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
 using Microsoft.PowerPlatform.Dataverse.Client;
 using Microsoft.Xrm.Sdk;
+using Microsoft.Xrm.Sdk.Messages;
+using Microsoft.Xrm.Sdk.Metadata;
 using Microsoft.Xrm.Sdk.Query;
 using Newtonsoft.Json;
 using SendCRMChangesToBQ.DTO;
@@ -74,7 +76,7 @@ namespace SendCRMChangesToBQ
                 entityName = context.PrimaryEntityName;
                 //string primarykey = entityName + "id";
                 //var entityReference = context.MessageName == "Delete" ? (EntityReference)context.InputParameters["Target"] : null;
-                var entity = context.MessageName != "Delete" ?  GetEntity(entityID,entityName) : null;
+                var entity = context.MessageName != "Delete" ?  await GetEntity(entityID,entityName) : null;
 
                 var param = new JsonCredentialParameters
                 {
@@ -88,26 +90,30 @@ namespace SendCRMChangesToBQ
                 };
 
                 var googlecredentials = GoogleCredential.FromJsonParameters(param);
-                var bigQueryClient = BigQueryClient.Create(projectId, googlecredentials);
+                var bigQueryClient = await BigQueryClient.CreateAsync(projectId, googlecredentials);
                 _logger.LogInformation($"BigQueryClient initiated for projectId {projectId}");
                 
                 try
                 {
                     ServiceBusBQ serviceBusBQ = null;
+                    var entityFields = await GetEntityAndFields(bigQueryClient, entity);
                     switch (msgtype)
                     {
                         case "Create":
                         case "Update":
-                            var entityFields = GetEntityAndFields(bigQueryClient, entity);
                             if (entityFields.Count > 0)
-                            {
+                            {                                
                                 serviceBusBQ = new ServiceBusBQ { MessageType = msgtype, Id = entityID, LogicalName = entityName, Fields = entityFields };
                                 await validatedQueueSender.SendMessageAsync(new ServiceBusMessage(JsonConvert.SerializeObject(serviceBusBQ)));
                             }
                             break;
                         case "Delete":
-                            serviceBusBQ = new ServiceBusBQ { MessageType = msgtype, Id = entityID, LogicalName = entityName, Fields = new List<Field>() };
-                            await validatedQueueSender.SendMessageAsync(new ServiceBusMessage(JsonConvert.SerializeObject(serviceBusBQ)));
+                            if (entityFields.Count > 0)
+                            {
+                                serviceBusBQ = new ServiceBusBQ { MessageType = msgtype, Id = entityID, LogicalName = entityName, Fields = new List<Field>() };
+                                await validatedQueueSender.SendMessageAsync(new ServiceBusMessage(JsonConvert.SerializeObject(serviceBusBQ)));
+
+                            }
                             break;
                     }
                     
@@ -150,12 +156,12 @@ namespace SendCRMChangesToBQ
 
         private static dynamic GetValueForAttribute(string attribute, Entity entity)
         {
-            var attributeValue = entity.Attributes.Contains(attribute) ? entity.Attributes[attribute] : null;
+            var attributeValue = entity.Attributes.Contains(attribute) ? entity.Attributes[attribute] : attribute == "id" ? entity.Id : null;
             if (attributeValue == null)
             {
                 Console.WriteLine("Attribute or attribute value is null.");
                 return null;
-            }
+            }            
             try
             {
                 switch (attributeValue)
@@ -165,7 +171,7 @@ namespace SendCRMChangesToBQ
                         {
                             string jsonDate = attributeValue.ToString();
                             long milliseconds = long.Parse(jsonDate.Substring(6, jsonDate.Length - 8));
-                            return DateTimeOffset.FromUnixTimeMilliseconds(milliseconds).DateTime.ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss");
+                            return DateTimeOffset.FromUnixTimeMilliseconds(milliseconds).DateTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
                         }
                         else
                         {
@@ -179,8 +185,10 @@ namespace SendCRMChangesToBQ
                         return (decimal)attributeValue;
                     case bool boolValue:
                         return attributeValue.ToString();
+                    case Guid guidValue:
+                        return guidValue.ToString();
                     case DateTime dateTimeValue:
-                        return ((DateTime)attributeValue).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss");
+                        return ((DateTime)attributeValue).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
                     case EntityReference entityReferenceValue:
                         return ((EntityReference)attributeValue).Id.ToString();
                     case OptionSetValue optionSetValue:
@@ -217,14 +225,14 @@ namespace SendCRMChangesToBQ
                 throw;
             }
         }
-        public static List<Field> GetEntityAndFields(BigQueryClient bigQueryClient, Entity entity)
+        public static async Task<List<Field>> GetEntityAndFields(BigQueryClient bigQueryClient, Entity entity)
         {
             var keyValuePair = new KeyValuePair<string, List<string>>();
 
             //if (!bigQueryCache.ContainsKey(entity.LogicalName))
             //{
                 string queryBQ = $"SELECT column_name FROM `{projectId}.{datasetId}.INFORMATION_SCHEMA.COLUMNS` WHERE table_name = '{entity.LogicalName}' ORDER BY column_name";
-                var results = bigQueryClient.CreateQueryJob(queryBQ, parameters: null).PollUntilCompleted().ThrowOnFatalError();
+                var results = await bigQueryClient.CreateQueryJobAsync(queryBQ, parameters: null);
                 List<string> fields = [];
 
                 if (results.GetQueryResults().TotalRows > 0)
@@ -255,13 +263,19 @@ namespace SendCRMChangesToBQ
             return obj;
         }
 
-        private Entity GetEntity(string entityId, string entityName)
+        private async Task<Entity> GetEntity(string entityId, string entityName)
         {
             using (var svc = new ServiceClient($@"AuthType=ClientSecret;Url={d365Environment};ClientId={clientid};ClientSecret={clientsecret}"))
             {
+                RetrieveEntityRequest retrieveEntityRequest = new RetrieveEntityRequest
+                {
+                    EntityFilters = EntityFilters.Attributes,
+                    LogicalName = entityName
+                };
+
                 var entId = new Guid(entityId);
 
-                var entity = svc.Retrieve(entityName, entId, new ColumnSet(true));
+                var entity = await svc.RetrieveAsync(entityName, entId, new ColumnSet(true));
                 _logger.LogInformation($"Entity - {entity.Id} retrieved...");
                 return entity;
 

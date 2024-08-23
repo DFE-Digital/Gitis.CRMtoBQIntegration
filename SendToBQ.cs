@@ -82,8 +82,7 @@ namespace SendCRMChangesToBQ
                 };
 
                 var googlecredentials = GoogleCredential.FromJsonParameters(param);
-                var bigQueryClient = BigQueryClient.Create(projectId, googlecredentials);
-                var table = bigQueryClient.GetTable(datasetId, entityName);
+                var bigQueryClient = BigQueryClient.Create(projectId, googlecredentials);                
                 _logger.LogInformation($"BigQueryClient initiated for projectId {projectId}");
 
                 try
@@ -96,7 +95,7 @@ namespace SendCRMChangesToBQ
                     {
                         var keyValueFields = context.Fields.ToDictionary(x => x.Key, x => x.Value);
                         row.Add(keyValueFields);
-                        table.InsertRow(row);
+                        await bigQueryClient.InsertRowAsync(projectId, datasetId, entityName, row, null);
                     }
                     else if (msgtype == "Update")
                     {
@@ -105,19 +104,16 @@ namespace SendCRMChangesToBQ
                             bQuery = $"Delete from `{projectId}.{datasetId}.{entityName}` where Id = '{entityID}'";
                             BigQueryParameter[] parameters = null;
 
-                            BigQueryJob job = bigQueryClient.CreateQueryJob(bQuery, parameters);
-                            job.PollUntilCompleted().ThrowOnFatalError();
-
-                            var keyValueFields = context.Fields.ToDictionary(x => x.Key, x => x.Value);
-
-                            //bQuery = $"Update `{projectId}.{datasetId}.{entityName}` set {string.Join(",", keyValueFields.Select(k => { return k.Value == null ? $"{k.Key} = '{k.Value}'" : k.Value.GetType() == typeof(string) ? $"{k.Key} = '{k.Value}'" : $"{k.Key} = {k.Value}"; }))} where {primarykey} = '{entityID}'";
-                            //_logger.LogInformation($"Query : {bQuery}");
-                            //BigQueryParameter[] parameters = null;
-
                             //BigQueryJob job = bigQueryClient.CreateQueryJob(bQuery, parameters);
                             //job.PollUntilCompleted().ThrowOnFatalError();
+                            await bigQueryClient.ExecuteQueryAsync(bQuery, null);
+
+                            var keyValueFields = context.Fields.ToDictionary(x => x.Key, x => x.Value);
+                            
                             row.Add(keyValueFields);
-                            table.InsertRow(row);
+                            var table = bigQueryClient.GetTable(datasetId, entityName);
+                            //await bigQueryClient.InsertRowAsync(projectId, datasetId, entityName, row, null);
+                            await table.InsertRowAsync(row);
                         }
                         catch (GoogleApiException ex)
                         {
