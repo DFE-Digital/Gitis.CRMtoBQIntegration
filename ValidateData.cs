@@ -187,7 +187,7 @@ namespace SendCRMChangesToBQ
                     case Guid guidValue:
                         return guidValue.ToString();
                     case DateTime dateTimeValue:
-                        return ((DateTime)attributeValue).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
+                        return ((DateTime)attributeValue).ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
                     case EntityReference entityReferenceValue:
                         return ((EntityReference)attributeValue).Id.ToString();
                     case OptionSetValue optionSetValue:

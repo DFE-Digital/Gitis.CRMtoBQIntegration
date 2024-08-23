@@ -82,7 +82,7 @@ namespace SendCRMChangesToBQ
                 };
 
                 var googlecredentials = GoogleCredential.FromJsonParameters(param);
-                var bigQueryClient = BigQueryClient.Create(projectId, googlecredentials);                
+                var bigQueryClient =  await BigQueryClient.CreateAsync(projectId, googlecredentials);                
                 _logger.LogInformation($"BigQueryClient initiated for projectId {projectId}");
 
                 try
@@ -135,12 +135,8 @@ namespace SendCRMChangesToBQ
                         try
                         {
                             bQuery = $"Delete from `{projectId}.{datasetId}.{entityName}` where Id = '{entityID}'";
-                            BigQueryParameter[] parameters = null;
-
-                            BigQueryJob job = bigQueryClient.CreateQueryJob(bQuery, parameters);
-                            job.PollUntilCompleted().ThrowOnFatalError();
-
-
+                            await bigQueryClient.ExecuteQueryAsync(bQuery, null);
+                            var keyValueFields = context.Fields.ToDictionary(x => x.Key, x => x.Value);
                         }
                         catch (GoogleApiException ex)
                         {
