@@ -156,10 +156,9 @@ namespace SendCRMChangesToBQ
 
         private static dynamic GetValueForAttribute(string attribute, Entity entity)
         {
-            var attributeValue = entity.Attributes.Contains(attribute) ? entity.Attributes[attribute] : attribute == "id" ? entity.Id : null;
+            var attributeValue = attribute == "id" ? entity.Id : entity.Attributes.Contains(attribute) ? entity.Attributes[attribute] : null;
             if (attributeValue == null)
-            {
-                Console.WriteLine("Attribute or attribute value is null.");
+            {                
                 return null;
             }            
             try
@@ -229,25 +228,20 @@ namespace SendCRMChangesToBQ
         {
             var keyValuePair = new KeyValuePair<string, List<string>>();
 
-            //if (!bigQueryCache.ContainsKey(entity.LogicalName))
-            //{
-                string queryBQ = $"SELECT column_name FROM `{projectId}.{datasetId}.INFORMATION_SCHEMA.COLUMNS` WHERE table_name = '{entity.LogicalName}' ORDER BY column_name";
-                var results = await bigQueryClient.CreateQueryJobAsync(queryBQ, parameters: null);
-                List<string> fields = [];
 
-                if (results.GetQueryResults().TotalRows > 0)
-                {
-                    fields = results.GetQueryResults().Select(x => x["column_name"].ToString().ToLower()).ToList();
-                    //bigQueryCache.Add(entity.LogicalName, fields);
-                }
+            string queryBQ = $"SELECT column_name FROM `{projectId}.{datasetId}.INFORMATION_SCHEMA.COLUMNS` WHERE table_name = '{entity.LogicalName}' ORDER BY column_name";
+            var results = await bigQueryClient.CreateQueryJobAsync(queryBQ, parameters: null);
+            List<string> fields = [];
 
-                keyValuePair = new KeyValuePair<string, List<string>>(entity.LogicalName, fields);
-            //}
-            //else
-            //{
-            //    keyValuePair = bigQueryCache.FirstOrDefault(x => x.Key == entity.LogicalName);
-            //}
-            var attributeValues = keyValuePair.Value.Where(x => entity.Attributes.Contains(x)).Select(x => { return new Field { Key = x, Value = GetValueForAttribute(x, entity) }; }).ToList();
+            if (results.GetQueryResults().TotalRows > 0)
+            {
+                fields = results.GetQueryResults().Select(x => x["column_name"].ToString().ToLower()).ToList();
+            }
+
+            keyValuePair = new KeyValuePair<string, List<string>>(entity.LogicalName, fields);
+
+
+            var attributeValues = keyValuePair.Value.Where(x => (entity.Attributes.Contains(x) || x == "id")).Select(x => { return new Field { Key = x, Value = GetValueForAttribute(x, entity) }; }).ToList();
 
             return attributeValues;
         }
@@ -266,12 +260,7 @@ namespace SendCRMChangesToBQ
         private async Task<Entity> GetEntity(string entityId, string entityName)
         {
             using (var svc = new ServiceClient($@"AuthType=ClientSecret;Url={d365Environment};ClientId={clientid};ClientSecret={clientsecret}"))
-            {
-                RetrieveEntityRequest retrieveEntityRequest = new RetrieveEntityRequest
-                {
-                    EntityFilters = EntityFilters.Attributes,
-                    LogicalName = entityName
-                };
+            {               
 
                 var entId = new Guid(entityId);
 

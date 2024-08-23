@@ -102,17 +102,12 @@ namespace SendCRMChangesToBQ
                         try
                         {
                             bQuery = $"Delete from `{projectId}.{datasetId}.{entityName}` where Id = '{entityID}'";
-                            BigQueryParameter[] parameters = null;
-
-                            //BigQueryJob job = bigQueryClient.CreateQueryJob(bQuery, parameters);
-                            //job.PollUntilCompleted().ThrowOnFatalError();
+                            
                             await bigQueryClient.ExecuteQueryAsync(bQuery, null);
-
                             var keyValueFields = context.Fields.ToDictionary(x => x.Key, x => x.Value);
                             
                             row.Add(keyValueFields);
                             var table = bigQueryClient.GetTable(datasetId, entityName);
-                            //await bigQueryClient.InsertRowAsync(projectId, datasetId, entityName, row, null);
                             await table.InsertRowAsync(row);
                         }
                         catch (GoogleApiException ex)
