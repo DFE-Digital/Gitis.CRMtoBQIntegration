@@ -7,8 +7,8 @@ using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 using SendCRMChangesToBQ.DTO;
 using System;
-using System.Collections.Generic;
 using System.Linq;
+using System.Net.Sockets;
 using System.Threading.Tasks;
 
 namespace SendCRMChangesToBQ
@@ -36,17 +36,31 @@ namespace SendCRMChangesToBQ
         private static readonly string sbconnection = Environment.GetEnvironmentVariable("sbconnection");
         private static readonly string CrmToBqConnection = Environment.GetEnvironmentVariable("CrmToBqConnection");
         private static readonly string sbtopicname = Environment.GetEnvironmentVariable("sbtopicname");
-        public static Dictionary<string, List<string>> bigQueryCache = [];
+        private readonly BigQueryClient _bigQueryClient; 
         private readonly ILogger<SendToBQ> _logger;
 
         public SendToBQ(ILogger<SendToBQ> logger)
         {
             _logger = logger;
+            var param = new JsonCredentialParameters
+            {
+                Type = gtype,
+                ProjectId = gproject_id,
+                PrivateKeyId = gprivate_key_id,
+                PrivateKey = gprivate_key,
+                ClientEmail = gclient_email,
+                ClientId = gclient_id,
+                TokenUrl = gtoken_uri
+            };
+
+            var googlecredentials = GoogleCredential.FromJsonParameters(param);
+            _bigQueryClient = BigQueryClient.Create(projectId, googlecredentials);
+            _logger.LogInformation($"BigQueryClient initiated for projectId {projectId}");
         }
 
         [Function(nameof(SendToBQ))]
         public async Task Run([ServiceBusTrigger("crmtobq", Connection = "CrmToBqConnection")] ServiceBusReceivedMessage message,
-        ServiceBusMessageActions messageActions, ServiceBusClient serviceBusClient)
+        ServiceBusMessageActions messageActions)
         {
             _logger.LogInformation($"C# ServiceBus topic trigger function processed message: {message.Body.ToString()}");
 
@@ -68,22 +82,7 @@ namespace SendCRMChangesToBQ
                 msgtype = context.MessageType;
                 entityID = context.Id;
                 entityName = context.LogicalName;
-                string primarykey = entityName + "id";
-
-                var param = new JsonCredentialParameters
-                {
-                    Type = gtype,
-                    ProjectId = gproject_id,
-                    PrivateKeyId = gprivate_key_id,
-                    PrivateKey = gprivate_key,
-                    ClientEmail = gclient_email,
-                    ClientId = gclient_id,
-                    TokenUrl = gtoken_uri
-                };
-
-                var googlecredentials = GoogleCredential.FromJsonParameters(param);
-                var bigQueryClient =  await BigQueryClient.CreateAsync(projectId, googlecredentials);                
-                _logger.LogInformation($"BigQueryClient initiated for projectId {projectId}");
+                string primarykey = entityName + "id";                
 
                 try
                 {
@@ -95,7 +94,7 @@ namespace SendCRMChangesToBQ
                     {
                         var keyValueFields = context.Fields.ToDictionary(x => x.Key, x => x.Value);
                         row.Add(keyValueFields);
-                        await bigQueryClient.InsertRowAsync(projectId, datasetId, entityName, row, null);
+                        await _bigQueryClient.InsertRowAsync(projectId, datasetId, entityName, row, null);
                     }
                     else if (msgtype == "Update")
                     {
@@ -103,11 +102,11 @@ namespace SendCRMChangesToBQ
                         {
                             bQuery = $"Delete from `{projectId}.{datasetId}.{entityName}` where Id = '{entityID}'";
                             
-                            await bigQueryClient.ExecuteQueryAsync(bQuery, null);
+                            await _bigQueryClient.ExecuteQueryAsync(bQuery, null);
                             var keyValueFields = context.Fields.ToDictionary(x => x.Key, x => x.Value);
                             
                             row.Add(keyValueFields);
-                            var table = bigQueryClient.GetTable(datasetId, entityName);
+                            var table = _bigQueryClient.GetTable(datasetId, entityName);
                             await table.InsertRowAsync(row);
                         }
                         catch (GoogleApiException ex)
@@ -118,7 +117,7 @@ namespace SendCRMChangesToBQ
                                 await requeueSender.ScheduleMessageAsync(new ServiceBusMessage(message.Body.ToString()) { ContentType = message.ContentType, To = message.To, Subject = message.Subject }, DateTime.UtcNow.AddMinutes(minutesToWait));
                                 _logger.LogInformation($"Successfully scheduled {message.MessageId} in the queue");
                             }
-                            else if (ex.ToString().Contains("concurrent") || ex.ToString().Contains("DML statements outstanding") || ex.ToString().Contains("table dml"))
+                            else if (ex.ToString().Contains("concurrent") || ex.ToString().Contains("DML statements outstanding") || ex.ToString().Contains("table dml") || ex.ToString().Contains("socket") || ex.ToString().Contains("A connection attempt failed"))
                             {
                                 await requeueSender.SendMessageAsync(new ServiceBusMessage(message.Body.ToString()));
                             }
@@ -135,7 +134,7 @@ namespace SendCRMChangesToBQ
                         try
                         {
                             bQuery = $"Delete from `{projectId}.{datasetId}.{entityName}` where Id = '{entityID}'";
-                            await bigQueryClient.ExecuteQueryAsync(bQuery, null);
+                            await _bigQueryClient.ExecuteQueryAsync(bQuery, null);
                             var keyValueFields = context.Fields.ToDictionary(x => x.Key, x => x.Value);
                         }
                         catch (GoogleApiException ex)
@@ -145,9 +144,9 @@ namespace SendCRMChangesToBQ
                                 await requeueSender.ScheduleMessageAsync(new ServiceBusMessage(message.Body.ToString()) { ContentType = message.ContentType, To = message.To, Subject = message.Subject }, DateTime.UtcNow.AddMinutes(minutesToWait));
                                 _logger.LogInformation($"Successfully scheduled {message.MessageId} in the queue");
                             }
-                            else if (ex.ToString().Contains("concurrent") || ex.ToString().Contains("DML statements outstanding") || ex.ToString().Contains("table dml"))
+                            else if (ex.ToString().Contains("concurrent") || ex.ToString().Contains("DML statements outstanding") || ex.ToString().Contains("table dml") || ex.ToString().Contains("socket") || ex.ToString().Contains("A connection attempt failed"))
                             {
-                                await requeueSender.SendMessageAsync(new ServiceBusMessage(message.Body.ToString()));
+                                await requeueSender.SendMessageAsync(new ServiceBusMessage(message));
                             }
                             else
                             {
@@ -172,6 +171,10 @@ namespace SendCRMChangesToBQ
                 }
 
 
+            }
+            catch (SocketException ex)
+            {
+                    await messageActions.DeadLetterMessageAsync(message, deadLetterReason: $"{msgtype} of {entityName} with id {entityID} failed", deadLetterErrorDescription: ex.Message);
             }
             catch (Exception ex)
             {

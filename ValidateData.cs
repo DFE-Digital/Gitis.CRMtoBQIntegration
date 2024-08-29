@@ -59,6 +59,7 @@ namespace SendCRMChangesToBQ
             _logger.LogInformation($"C# ServiceBus topic trigger function processed message: {message.Body.ToString()}");
 
             var validatedQueueSender = new ServiceBusClient(CrmToBqConnection).CreateSender("crmtobq");
+            ServiceBusSender requeueSender = new ServiceBusClient(CrmToBqConnection).CreateSender("datafromcrm");
 
             string msgtype = "";
             string entityID = "";
@@ -66,7 +67,7 @@ namespace SendCRMChangesToBQ
             try
             {
                 var context = DeserializeJsonString<RemoteExecutionContext>(message.Body.ToString());
-                                
+
                 _logger.LogInformation($" message name: {context.MessageName}");
                 _logger.LogInformation($" Primary Entity ID: {context.PrimaryEntityId}");
                 _logger.LogInformation($" Primary Entity Name: {context.PrimaryEntityName}");
@@ -76,7 +77,7 @@ namespace SendCRMChangesToBQ
                 entityName = context.PrimaryEntityName;
                 //string primarykey = entityName + "id";
                 //var entityReference = context.MessageName == "Delete" ? (EntityReference)context.InputParameters["Target"] : null;
-                var entity = context.MessageName != "Delete" ?  await GetEntity(entityID,entityName) : null;
+                var entity = context.MessageName != "Delete" ? await GetEntity(entityID, entityName) : new Entity(entityName, context.PrimaryEntityId);
 
                 var param = new JsonCredentialParameters
                 {
@@ -92,62 +93,52 @@ namespace SendCRMChangesToBQ
                 var googlecredentials = GoogleCredential.FromJsonParameters(param);
                 var bigQueryClient = await BigQueryClient.CreateAsync(projectId, googlecredentials);
                 _logger.LogInformation($"BigQueryClient initiated for projectId {projectId}");
-                
-                try
-                {
-                    ServiceBusBQ serviceBusBQ = null;
-                    var entityFields = await GetEntityAndFields(bigQueryClient, entity);
-                    switch (msgtype)
-                    {
-                        case "Create":
-                        case "Update":
-                            if (entityFields.Count > 0)
-                            {                                
-                                serviceBusBQ = new ServiceBusBQ { MessageType = msgtype, Id = entityID, LogicalName = entityName, Fields = entityFields };
-                                await validatedQueueSender.SendMessageAsync(new ServiceBusMessage(JsonConvert.SerializeObject(serviceBusBQ)));
-                            }
-                            break;
-                        case "Delete":
-                            if (entityFields.Count > 0)
-                            {
-                                serviceBusBQ = new ServiceBusBQ { MessageType = msgtype, Id = entityID, LogicalName = entityName, Fields = new List<Field>() };
-                                await validatedQueueSender.SendMessageAsync(new ServiceBusMessage(JsonConvert.SerializeObject(serviceBusBQ)));
 
-                            }
-                            break;
-                    }
-                    
-                }
-                catch (JsonSerializationException e)
+
+                ServiceBusBQ serviceBusBQ = null;
+                var entityFields = await GetEntityAndFields(bigQueryClient, entity);
+                switch (msgtype)
                 {
-                    _logger.LogCritical($"Entity Name: {entityName}");
-                    _logger.LogCritical(e.ToString());
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogCritical($"Entity Name: {entityName}");
-                    _logger.LogCritical(ex.ToString());
-                    throw;
+                    case "Create":
+                    case "Update":
+                        if (entityFields.Count > 0)
+                        {
+                            serviceBusBQ = new ServiceBusBQ { MessageType = msgtype, Id = entityID, LogicalName = entityName, Fields = entityFields };
+                            await validatedQueueSender.SendMessageAsync(new ServiceBusMessage(JsonConvert.SerializeObject(serviceBusBQ)));
+                        }
+                        break;
+                    case "Delete":
+                        if (entityFields.Count > 0)
+                        {
+                            serviceBusBQ = new ServiceBusBQ { MessageType = msgtype, Id = entityID, LogicalName = entityName, Fields = new List<Field>() };
+                            await validatedQueueSender.SendMessageAsync(new ServiceBusMessage(JsonConvert.SerializeObject(serviceBusBQ)));
+
+                        }
+                        break;
                 }
 
-                
+
             }
             catch (Exception ex)
             {
                 try
                 {
-                    
-                    _logger.LogInformation($"Dead lettering message : {message.MessageId}");
-                    await messageActions.DeadLetterMessageAsync(message, deadLetterReason: $"{msgtype} of {entityName} with id {entityID} failed",deadLetterErrorDescription: ex.Message);
-                    _logger.LogInformation($"Dead lettered message : {message.MessageId}");
-                   
+                    if (ex.ToString().Contains("concurrent") || ex.ToString().Contains("DML statements outstanding") || ex.ToString().Contains("table dml") || ex.ToString().Contains("socket") || ex.ToString().Contains("A connection attempt failed"))
+                    {
+                        await requeueSender.SendMessageAsync(new ServiceBusMessage(message));
+                    } else {
+
+                        
+                        await messageActions.DeadLetterMessageAsync(message, deadLetterReason: $"{msgtype} of {entityName} with id {entityID} failed", deadLetterErrorDescription: ex.Message);
+             
+                    }
+
                 }
                 catch (Exception deadLetterEx)
                 {
                     _logger.LogCritical($"Failed to dead-letter message: {deadLetterEx.Message}");
                     throw;
-                }                
+                }
 
             }        
 
