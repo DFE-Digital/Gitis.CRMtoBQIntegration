@@ -10,7 +10,7 @@ using Microsoft.Xrm.Sdk.Messages;
 using Microsoft.Xrm.Sdk.Metadata;
 using Microsoft.Xrm.Sdk.Query;
 using Newtonsoft.Json;
-using SendCRMChangesToBQ.DTO;
+using CRMMessageProcessor.DTO;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -20,7 +20,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
-namespace SendCRMChangesToBQ
+namespace CRMMessageProcessor
 {
     public class ValidateData
     {
@@ -58,8 +58,7 @@ namespace SendCRMChangesToBQ
         ServiceBusMessageActions messageActions)
         {
             _logger.LogInformation($"C# ServiceBus topic trigger function processed message: {message.Body.ToString()}");
-
-            var validatedQueueSender = new ServiceBusClient(CrmToBqConnection).CreateSender("crmtobq");
+            
             ServiceBusSender requeueSender = new ServiceBusClient(CrmToBqConnection).CreateSender("datafromcrm");
 
             string msgtype = "";
@@ -76,9 +75,11 @@ namespace SendCRMChangesToBQ
                 msgtype = context.MessageName;
                 entityID = context.PrimaryEntityId.ToString();
                 entityName = context.PrimaryEntityName;
-                //string primarykey = entityName + "id";
-                //var entityReference = context.MessageName == "Delete" ? (EntityReference)context.InputParameters["Target"] : null;
+                var validatedQueueSender = new ServiceBusClient(CrmToBqConnection).CreateSender(entityName);
+
                 var entity = context.MessageName != "Delete" ? await GetEntity(entityID, entityName) : new Entity(entityName, context.PrimaryEntityId);
+
+                var configEntity = await GetBigQueryConfig(entity.LogicalName);                
 
                 var param = new JsonCredentialParameters
                 {
@@ -97,7 +98,7 @@ namespace SendCRMChangesToBQ
 
 
                 ServiceBusBQ serviceBusBQ = null;
-                var entityFields = await GetEntityAndFields(bigQueryClient, entity);
+                var entityFields = await GetEntityAndFields(bigQueryClient, entity, configEntity);
                 switch (msgtype)
                 {
                     case "Create":
@@ -119,18 +120,14 @@ namespace SendCRMChangesToBQ
                 }
 
 
-            }
-            catch (SocketException ex)
-            {
-                await requeueSender.SendMessageAsync(new ServiceBusMessage(message));
-            }
+            }            
             catch (Exception ex)
             {
                 try
                 {
                     if (ex.ToString().Contains("concurrent") || ex.ToString().Contains("DML statements outstanding") || ex.ToString().Contains("table dml") || ex.ToString().Contains("socket") || ex.ToString().Contains("A connection attempt failed"))
                     {
-                        await requeueSender.SendMessageAsync(new ServiceBusMessage(message));
+                        await requeueSender.ScheduleMessageAsync(new ServiceBusMessage(message), DateTime.UtcNow.AddMinutes(30));
                     } else {
 
                         
@@ -220,22 +217,34 @@ namespace SendCRMChangesToBQ
                 throw;
             }
         }
-        public static async Task<List<Field>> GetEntityAndFields(BigQueryClient bigQueryClient, Entity entity)
+        public static async Task<List<Field>> GetEntityAndFields(BigQueryClient bigQueryClient, Entity entity, Entity configEntity)
         {
-            var keyValuePair = new KeyValuePair<string, List<string>>();
 
-
-            string queryBQ = $"SELECT column_name FROM `{projectId}.{datasetId}.INFORMATION_SCHEMA.COLUMNS` WHERE table_name = '{entity.LogicalName}' ORDER BY column_name";
-            var results = await bigQueryClient.CreateQueryJobAsync(queryBQ, parameters: null);
-            List<string> fields = [];
-
-            if (results.GetQueryResults().TotalRows > 0)
+            List<string> fields = new List<string>();
+            if (configEntity != null)
             {
-                fields = results.GetQueryResults().Select(x => x["column_name"].ToString().ToLower()).ToList();
+                fields = DeserializeJsonString<List<string>>(configEntity.GetAttributeValue<string>("dfe_tablejson"));
             }
+            var keyValuePair = new KeyValuePair<string, List<string>>(entity.LogicalName, fields);
 
-            keyValuePair = new KeyValuePair<string, List<string>>(entity.LogicalName, fields);
+            if (configEntity == null)
+            {
 
+                string queryBQ = $"SELECT column_name FROM `{projectId}.{datasetId}.INFORMATION_SCHEMA.COLUMNS` WHERE table_name = '{entity.LogicalName}' ORDER BY column_name";
+                var results = await bigQueryClient.CreateQueryJobAsync(queryBQ, parameters: null);               
+
+                if (results.GetQueryResults().TotalRows > 0)
+                {
+                    fields = results.GetQueryResults().Select(x => x["column_name"].ToString().ToLower()).ToList();
+                }
+
+                keyValuePair = new KeyValuePair<string, List<string>>(entity.LogicalName, fields);
+
+                Entity newEntity = new Entity("dfe_bigquerytableconfig");
+                newEntity["dfe_tablejson"] = JsonConvert.SerializeObject(fields);
+                newEntity["dfe_name"] = entity.LogicalName;
+                CreateConfig(newEntity);
+            }
 
             var attributeValues = keyValuePair.Value.Where(x => (entity.Attributes.Contains(x) || x == "id")).Select(x => { return new Field { Key = x, Value = GetValueForAttribute(x, entity) }; }).ToList();
 
@@ -251,6 +260,35 @@ namespace SendCRMChangesToBQ
             obj = (RemoteContextType)serializer.ReadObject(ms);
             ms.Close();
             return obj;
+        }
+
+        private static void CreateConfig(Entity entity)
+        {
+            using var svc = new ServiceClient($@"AuthType=ClientSecret;Url={d365Environment};ClientId={clientid};ClientSecret={clientsecret}");
+            svc.Create(entity);
+        }
+
+        private async Task<Entity> GetBigQueryConfig(string entityName)
+        {
+            using var svc = new ServiceClient($@"AuthType=ClientSecret;Url={d365Environment};ClientId={clientid};ClientSecret={clientsecret}");
+
+            var query = new QueryExpression("dfe_bigquerytableconfig");
+
+            query.ColumnSet.AllColumns = true;
+
+            query.Criteria.AddCondition("dfe_name", ConditionOperator.Equal, entityName);
+
+            var entityCollection = await svc.RetrieveMultipleAsync(query);
+            //_logger.LogInformation($"{entityCollection.TotalRecordCount} {entityName} config retrieved...");
+
+            if (entityCollection?.Entities.Count == 1)
+            {
+                return entityCollection.Entities.First();
+            }
+            else
+            {
+                return null;
+            }
         }
 
         private async Task<Entity> GetEntity(string entityId, string entityName)
