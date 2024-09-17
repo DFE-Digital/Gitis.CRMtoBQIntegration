@@ -1,19 +1,14 @@
-using Azure.Messaging.ServiceBus;
 using Google.Apis.Auth.OAuth2;
 using Google.Cloud.BigQuery.V2;
 using Microsoft.Azure.Functions.Worker;
-using Microsoft.Azure.Functions.Worker.Extensions.Timer;
-using Microsoft.Crm.Sdk.Messages;
 using Microsoft.Extensions.Logging;
-using Newtonsoft.Json;
-using SendToBQ.DTO;
 using SendToBQ.Processor;
 using System;
 using System.Threading.Tasks;
 
 namespace SendToBQ
 {
-    public class Contact
+    public class contact
     {
 
         private static readonly string projectId = Environment.GetEnvironmentVariable("projectId");
@@ -28,14 +23,13 @@ namespace SendToBQ
         private static readonly string gauth_uri = Environment.GetEnvironmentVariable("googlecredentials:auth_uri");
         private static readonly string gtoken_uri = Environment.GetEnvironmentVariable("googlecredentials:token_uri");
         private static readonly string gauth_provider_x509_cert_url = Environment.GetEnvironmentVariable("googlecredentials:auth_provider_x509_cert_url");
-        private static readonly string gclient_x509_cert_url = Environment.GetEnvironmentVariable("googlecredentials:client_x509_cert_url");
+        private static readonly string gclient_x509_cert_url = Environment.GetEnvironmentVariable("googlecredentials:client_x509_cert_url");        
         
-        
-        private static readonly string sbtopicname = Environment.GetEnvironmentVariable("sbtopicname");
+        //private static readonly string sbtopicname = Environment.GetEnvironmentVariable("sbtopicname");
         private readonly BigQueryClient _bigQueryClient;
-        private readonly ILogger<Contact> _logger;
+        private readonly ILogger<contact> _logger;
 
-        public Contact(ILogger<Contact> logger)
+        public contact(ILogger<contact> logger)
         {
             _logger = logger;
             var param = new JsonCredentialParameters
@@ -54,42 +48,22 @@ namespace SendToBQ
             _logger.LogInformation($"BigQueryClient initiated for projectId {projectId}");
         }
 
-        [Function(nameof(Contact))]
-
+        [Function(nameof(contact))]        
         //public async Task Run([ServiceBusTrigger("contact", Connection = "CrmToBqConnection")] ServiceBusReceivedMessage message,
         //ServiceBusMessageActions messageActions)
-        public async Task Run([TimerTrigger("0 */5 * * * *")] TimerInfo timerInfo, FunctionContext context)
-        {            
-            string msgType = "";
-            string entityID = "";
-            string entityName = "";            
-                        
+        public async Task Run([TimerTrigger("0 */1 * * * *")] TimerInfo timerInfo, FunctionContext context)
+        {               
             try {
 
-                var context = JsonConvert.DeserializeObject<ServiceBusBQ>(message.Body.ToString());
-                msgType = context.MessageType;
-                entityID = context.Id;
-                entityName = context.LogicalName;
-
                 BQProcessor processor = new(_bigQueryClient, _logger);
-                await processor.Process(message);
+                await processor.Process("contact");
 
             }
             catch (Exception ex)
             {
-                try
-                {
-
-                    _logger.LogInformation($"Dead lettering message : {message.MessageId}");
-                    await messageActions.DeadLetterMessageAsync(message, deadLetterReason: $"{msgType} of {entityName} with id {entityID} failed", deadLetterErrorDescription: ex.Message);
-                    _logger.LogInformation($"Dead lettered message : {message.MessageId}");
-
-                }
-                catch (Exception deadLetterEx)
-                {
-                    _logger.LogCritical($"Failed to dead-letter message: {deadLetterEx.Message}");
-                    throw;
-                }
+                
+                    _logger.LogCritical($"Failed contact timer : {ex.Message}");
+                    throw;                
 
             }
 

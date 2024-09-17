@@ -79,7 +79,7 @@ namespace CRMMessageProcessor
 
                 var entity = context.MessageName != "Delete" ? await GetEntity(entityID, entityName) : new Entity(entityName, context.PrimaryEntityId);
 
-                var configEntity = await GetBigQueryConfig(entity.LogicalName);                
+                var configEntity = await GetBigQueryConfig(context.PrimaryEntityName);                
 
                 var param = new JsonCredentialParameters
                 {
@@ -123,24 +123,26 @@ namespace CRMMessageProcessor
             }            
             catch (Exception ex)
             {
-                try
-                {
-                    if (ex.ToString().Contains("concurrent") || ex.ToString().Contains("DML statements outstanding") || ex.ToString().Contains("table dml") || ex.ToString().Contains("socket") || ex.ToString().Contains("A connection attempt failed"))
-                    {
-                        await requeueSender.ScheduleMessageAsync(new ServiceBusMessage(message), DateTime.UtcNow.AddMinutes(30));
-                    } else {
+                //try
+                //{
+                //    if (ex.ToString().Contains("concurrent") || ex.ToString().Contains("DML statements outstanding") || ex.ToString().Contains("table dml") || ex.ToString().Contains("socket") || ex.ToString().Contains("A connection attempt failed"))
+                //    {
+                //        await requeueSender.ScheduleMessageAsync(new ServiceBusMessage(message), DateTime.UtcNow.AddMinutes(30));
+                //    } else {
 
-                        
-                        await messageActions.DeadLetterMessageAsync(message, deadLetterReason: $"{msgtype} of {entityName} with id {entityID} failed", deadLetterErrorDescription: ex.Message);
-             
-                    }
 
-                }
-                catch (Exception deadLetterEx)
-                {
-                    _logger.LogCritical($"Failed to dead-letter message: {deadLetterEx.Message}");
-                    throw;
-                }
+                //        await messageActions.DeadLetterMessageAsync(message, deadLetterReason: $"{msgtype} of {entityName} with id {entityID} failed", deadLetterErrorDescription: ex.Message);
+
+                //    }
+
+                //}
+                //catch (Exception deadLetterEx)
+                //{
+                //    _logger.LogCritical($"Failed to dead-letter message: {deadLetterEx.Message}");
+                //    throw;
+                //}
+
+                await messageActions.DeadLetterMessageAsync(message, deadLetterReason: $"{msgtype} of {entityName} with id {entityID} failed", deadLetterErrorDescription: ex.Message);
 
             }        
 
@@ -161,9 +163,9 @@ namespace CRMMessageProcessor
                     case string strValue:
                         if (attributeValue.ToString().Contains("Date("))
                         {
-                            string jsonDate = attributeValue.ToString();
-                            long milliseconds = long.Parse(jsonDate.Substring(6, jsonDate.Length - 8));
-                            return DateTimeOffset.FromUnixTimeMilliseconds(milliseconds).DateTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
+                            string jsonDate = attributeValue.ToString().Replace("Date(", "").Replace(")", "").Split("+")[0];
+                            long milliseconds = long.Parse(jsonDate);
+                            return DateTimeOffset.FromUnixTimeMilliseconds(milliseconds).DateTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ");
                         }
                         else
                         {
@@ -180,7 +182,7 @@ namespace CRMMessageProcessor
                     case Guid guidValue:
                         return guidValue.ToString();
                     case DateTime dateTimeValue:
-                        return ((DateTime)attributeValue).ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
+                        return ((DateTime)attributeValue).ToString("yyyy-MM-ddTHH:mm:ssZ");
                     case EntityReference entityReferenceValue:
                         return ((EntityReference)attributeValue).Id.ToString();
                     case OptionSetValue optionSetValue:

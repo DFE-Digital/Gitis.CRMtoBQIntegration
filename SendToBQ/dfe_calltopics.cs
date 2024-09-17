@@ -53,40 +53,20 @@ namespace SendToBQ
         }
 
         [Function(nameof(dfe_calltopics))]
-        public async Task Run([ServiceBusTrigger("dfe_calltopics", Connection = "CrmToBqConnection")] ServiceBusReceivedMessage message,
-        ServiceBusMessageActions messageActions)
+        public async Task Run([TimerTrigger("0 */1 * * * *")] TimerInfo timerInfo, FunctionContext context)
         {
-            _logger.LogInformation($"C# ServiceBus topic trigger function processed message: {message.Body.ToString()}");
-            string msgType = "";
-            string entityID = "";
-            string entityName = "";            
-                        
-            try {
-
-                var context = JsonConvert.DeserializeObject<ServiceBusBQ>(message.Body.ToString());
-                msgType = context.MessageType;
-                entityID = context.Id;
-                entityName = context.LogicalName;
+            try
+            {
 
                 BQProcessor processor = new(_bigQueryClient, _logger);
-                await processor.Process(message);
+                await processor.Process("dfe_calltopics");
 
             }
             catch (Exception ex)
             {
-                try
-                {
 
-                    _logger.LogInformation($"Dead lettering message : {message.MessageId}");
-                    await messageActions.DeadLetterMessageAsync(message, deadLetterReason: $"{msgType} of {entityName} with id {entityID} failed", deadLetterErrorDescription: ex.Message);
-                    _logger.LogInformation($"Dead lettered message : {message.MessageId}");
-
-                }
-                catch (Exception deadLetterEx)
-                {
-                    _logger.LogCritical($"Failed to dead-letter message: {deadLetterEx.Message}");
-                    throw;
-                }
+                _logger.LogCritical($"Failed {nameof(dfe_calltopics)} timer : {ex.Message}");
+                throw;
 
             }
 
