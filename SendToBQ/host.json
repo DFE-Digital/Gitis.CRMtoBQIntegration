@@ -6,12 +6,6 @@
         "isEnabled": true,
         "excludedTypes": "Request"
       }
-    },
-    "extensions": {
-      "serviceBus": {
-        "maxConcurrentCalls": 20,
-        "prefetchCount": 0
-      }
     }
   }
 }

@@ -19,6 +19,7 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
+using System.Security.Cryptography;
 
 namespace CRMMessageProcessor
 {
@@ -142,7 +143,9 @@ namespace CRMMessageProcessor
                 //    throw;
                 //}
 
-                await messageActions.DeadLetterMessageAsync(message, deadLetterReason: $"{msgtype} of {entityName} with id {entityID} failed", deadLetterErrorDescription: ex.Message);
+                Random rng = new();
+
+                await requeueSender.ScheduleMessageAsync(new ServiceBusMessage(message), DateTime.UtcNow.AddMinutes(rng.Next(1,30)));
 
             }        
 
@@ -165,7 +168,7 @@ namespace CRMMessageProcessor
                         {
                             string jsonDate = attributeValue.ToString().Replace("Date(", "").Replace(")", "").Split("+")[0];
                             long milliseconds = long.Parse(jsonDate);
-                            return DateTimeOffset.FromUnixTimeMilliseconds(milliseconds).DateTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ");
+                            return DateTimeOffset.FromUnixTimeMilliseconds(milliseconds).DateTime.ToUniversalTime().ToString("yyyy'-'MM'-'dd'T'HH':'mm':'ss'.'fff'Z'");
                         }
                         else
                         {
@@ -182,7 +185,7 @@ namespace CRMMessageProcessor
                     case Guid guidValue:
                         return guidValue.ToString();
                     case DateTime dateTimeValue:
-                        return ((DateTime)attributeValue).ToString("yyyy-MM-ddTHH:mm:ssZ");
+                        return ((DateTime)attributeValue).ToString("yyyy'-'MM'-'dd'T'HH':'mm':'ss'.'fff'Z'");
                     case EntityReference entityReferenceValue:
                         return ((EntityReference)attributeValue).Id.ToString();
                     case OptionSetValue optionSetValue:
@@ -283,7 +286,7 @@ namespace CRMMessageProcessor
             var entityCollection = await svc.RetrieveMultipleAsync(query);
             //_logger.LogInformation($"{entityCollection.TotalRecordCount} {entityName} config retrieved...");
 
-            if (entityCollection?.Entities.Count == 1)
+            if (entityCollection?.Entities.Count > 0)
             {
                 return entityCollection.Entities.First();
             }
