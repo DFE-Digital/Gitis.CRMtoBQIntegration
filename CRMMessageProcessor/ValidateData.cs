@@ -1,13 +1,10 @@
 using Azure.Messaging.ServiceBus;
-using Google;
 using Google.Apis.Auth.OAuth2;
 using Google.Cloud.BigQuery.V2;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
 using Microsoft.PowerPlatform.Dataverse.Client;
 using Microsoft.Xrm.Sdk;
-using Microsoft.Xrm.Sdk.Messages;
-using Microsoft.Xrm.Sdk.Metadata;
 using Microsoft.Xrm.Sdk.Query;
 using Newtonsoft.Json;
 using CRMMessageProcessor.DTO;
@@ -15,11 +12,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Net.Sockets;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using System.Security.Cryptography;
 
 namespace CRMMessageProcessor
 {
@@ -78,7 +73,7 @@ namespace CRMMessageProcessor
                 entityName = context.PrimaryEntityName;
                 var validatedQueueSender = new ServiceBusClient(CrmToBqConnection).CreateSender(entityName);
 
-                var entity = context.MessageName != "Delete" ? await GetEntity(entityID, entityName) : new Entity(entityName, context.PrimaryEntityId);
+                var entity = context.MessageName != "Delete" ? await GetEntity(entityID, entityName) : new Entity(context.PrimaryEntityName,context.PrimaryEntityId);
 
                 var configEntity = await GetBigQueryConfig(context.PrimaryEntityName);                
 
@@ -97,58 +92,41 @@ namespace CRMMessageProcessor
                 var bigQueryClient = await BigQueryClient.CreateAsync(projectId, googlecredentials);
                 _logger.LogInformation($"BigQueryClient initiated for projectId {projectId}");
 
-
                 ServiceBusBQ serviceBusBQ = null;
-                var entityFields = await GetEntityAndFields(bigQueryClient, entity, configEntity);
-                switch (msgtype)
+                var entityFields = new List<Field>();
+                if (configEntity != null)
                 {
-                    case "Create":
-                    case "Update":
-                        if (entityFields.Count > 0)
-                        {
+                    switch (msgtype)
+                    {
+                        case "Create":
+                        case "Update":
+                            entityFields = await GetEntityAndFields(entity, configEntity);
+                            if (entityFields.Count > 0)
+                            {
+                                serviceBusBQ = new ServiceBusBQ { MessageType = msgtype, Id = entityID, LogicalName = entityName, Fields = entityFields };
+                                await validatedQueueSender.SendMessageAsync(new ServiceBusMessage(JsonConvert.SerializeObject(serviceBusBQ)));
+                            }
+                            break;
+                        case "Delete":
+                            entityFields.Add(new Field { Key = "id", Value = context.PrimaryEntityId });
+                            entityFields.Add(new Field { Key = $"{context.PrimaryEntityName}id", Value = context.PrimaryEntityId });
+                            entityFields.Add(new Field { Key = "statecode", Value = "Deleted" });
+                            entityFields.Add(new Field { Key = "statuscode", Value = "Deleted" });
+                            entityFields.Add(new Field { Key = "modifiedon", Value = DateTime.UtcNow.ToString("yyyy'-'MM'-'dd'T'HH':'mm':'ss'.'fff'Z'") });
+                            entityFields.Add(new Field { Key = "modifiedby", Value = context.UserId.ToString() });
                             serviceBusBQ = new ServiceBusBQ { MessageType = msgtype, Id = entityID, LogicalName = entityName, Fields = entityFields };
                             await validatedQueueSender.SendMessageAsync(new ServiceBusMessage(JsonConvert.SerializeObject(serviceBusBQ)));
-                        }
-                        break;
-                    case "Delete":
-                        if (entityFields.Count > 0)
-                        {
-                            serviceBusBQ = new ServiceBusBQ { MessageType = msgtype, Id = entityID, LogicalName = entityName, Fields = new List<Field>() };
-                            await validatedQueueSender.SendMessageAsync(new ServiceBusMessage(JsonConvert.SerializeObject(serviceBusBQ)));
-
-                        }
-                        break;
+                            break;
+                    }
                 }
-
 
             }            
             catch (Exception ex)
             {
-                //try
-                //{
-                //    if (ex.ToString().Contains("concurrent") || ex.ToString().Contains("DML statements outstanding") || ex.ToString().Contains("table dml") || ex.ToString().Contains("socket") || ex.ToString().Contains("A connection attempt failed"))
-                //    {
-                //        await requeueSender.ScheduleMessageAsync(new ServiceBusMessage(message), DateTime.UtcNow.AddMinutes(30));
-                //    } else {
-
-
-                //        await messageActions.DeadLetterMessageAsync(message, deadLetterReason: $"{msgtype} of {entityName} with id {entityID} failed", deadLetterErrorDescription: ex.Message);
-
-                //    }
-
-                //}
-                //catch (Exception deadLetterEx)
-                //{
-                //    _logger.LogCritical($"Failed to dead-letter message: {deadLetterEx.Message}");
-                //    throw;
-                //}
-
+                _logger.LogCritical($"Message failed");
                 Random rng = new();
-
-                await requeueSender.ScheduleMessageAsync(new ServiceBusMessage(message), DateTime.UtcNow.AddMinutes(rng.Next(1,30)));
-
-            }        
-
+                await requeueSender.ScheduleMessageAsync(new ServiceBusMessage(message), DateTime.UtcNow.AddMinutes(rng.Next(1,30)));                
+            }
 
         }
 
@@ -181,7 +159,7 @@ namespace CRMMessageProcessor
                     case decimal decimalValue:
                         return (decimal)attributeValue;
                     case bool boolValue:
-                        return attributeValue.ToString();
+                        return entity.FormattedValues[attribute];
                     case Guid guidValue:
                         return guidValue.ToString();
                     case DateTime dateTimeValue:
@@ -222,34 +200,14 @@ namespace CRMMessageProcessor
                 throw;
             }
         }
-        public static async Task<List<Field>> GetEntityAndFields(BigQueryClient bigQueryClient, Entity entity, Entity configEntity)
+        public static async Task<List<Field>> GetEntityAndFields(Entity entity, Entity configEntity)
         {
 
             List<string> fields = new List<string>();
-            if (configEntity != null)
-            {
-                fields = DeserializeJsonString<List<string>>(configEntity.GetAttributeValue<string>("dfe_tablejson"));
-            }
+
+            fields = DeserializeJsonString<List<string>>(configEntity.GetAttributeValue<string>("dfe_tablejson"));
+
             var keyValuePair = new KeyValuePair<string, List<string>>(entity.LogicalName, fields);
-
-            if (configEntity == null)
-            {
-
-                string queryBQ = $"SELECT column_name FROM `{projectId}.{datasetId}.INFORMATION_SCHEMA.COLUMNS` WHERE table_name = '{entity.LogicalName}' ORDER BY column_name";
-                var results = await bigQueryClient.CreateQueryJobAsync(queryBQ, parameters: null);               
-
-                if (results.GetQueryResults().TotalRows > 0)
-                {
-                    fields = results.GetQueryResults().Select(x => x["column_name"].ToString().ToLower()).ToList();
-                }
-
-                keyValuePair = new KeyValuePair<string, List<string>>(entity.LogicalName, fields);
-
-                Entity newEntity = new Entity("dfe_bigquerytableconfig");
-                newEntity["dfe_tablejson"] = JsonConvert.SerializeObject(fields);
-                newEntity["dfe_name"] = entity.LogicalName;
-                CreateConfig(newEntity);
-            }
 
             var attributeValues = keyValuePair.Value.Where(x => (entity.Attributes.Contains(x) || x == "id")).Select(x => { return new Field { Key = x, Value = GetValueForAttribute(x, entity) }; }).ToList();
 

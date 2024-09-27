@@ -9,6 +9,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.ServiceModel.Channels;
 using System.Threading.Tasks;
+using static System.Runtime.InteropServices.JavaScript.JSType;
 
 namespace SendToBQ.Processor
 {
@@ -28,11 +29,11 @@ namespace SendToBQ.Processor
         {
             ServiceBusReceiver serviceBusReceiver = new ServiceBusClient(CrmToBqConnection).CreateReceiver(queueName);
 
-            var messages = await serviceBusReceiver.ReceiveMessagesAsync(100);            
+            var messages = await serviceBusReceiver.ReceiveMessagesAsync(1000);            
 
             string msgType = "";
             string entityID = "";
-            string entityName = "";           
+            string entityName = "";
 
             try
             {
@@ -49,33 +50,62 @@ namespace SendToBQ.Processor
                     _logger.LogInformation($" Primary Entity ID: {context.Id}");
                     _logger.LogInformation($" Primary Entity Name: {context.LogicalName}");
 
-                    if (msgType == "Create" || msgType == "Update")
+                    try
                     {
-                        var keyValueFields = context.Fields.ToDictionary(x => x.Key, x => x.Value);
-                        rows.Add([keyValueFields]);
 
-                    }
-                    else if (msgType == "Delete")
-                    {
+                        //if (msgType == "Create" || msgType == "Update")
+                        //{
+                        //    var keyValueFields = context.Fields.ToDictionary(x => x.Key, x => x.Value);
+                        //    rows.Add([keyValueFields]);
+
+                        //}
+                        //else if (msgType == "Delete")
+                        //{
+                        //    var keyValueFields = context.Fields.ToDictionary(x => x.Key, x => x.Value);
+                        //    rows.Add([keyValueFields]);
+                        //}
+
                         var keyValueFields = context.Fields.ToDictionary(x => x.Key, x => x.Value);
                         rows.Add([keyValueFields]);
+                    }
+                    catch (Exception ex)
+                    {
+                        await serviceBusReceiver.DeadLetterMessageAsync(message, $"Prevalidate - {ex.Message}", ex.StackTrace);
                     }
                 }
 
-                await _bigQueryClient.InsertRowsAsync(projectId, datasetId, entityName, rows.ToArray());
+                var bigQueryInsertResult = await _bigQueryClient.InsertRowsAsync(projectId, datasetId, entityName, rows.ToArray());
 
-                foreach(var message in messages)
+                var errors = bigQueryInsertResult.Errors;
+
+                _logger.LogCritical($"Errors: {errors.Count()}");
+
+                foreach (var error in errors)
                 {
-                    await serviceBusReceiver.CompleteMessageAsync(message);
+                    var failedMessage = messages[(int)error.OriginalRowIndex];
+
+                    _logger.LogCritical($"Error message index: {(int)error.OriginalRowIndex}");
+
+                    foreach (var row in error)
+                    {
+                        await serviceBusReceiver.DeadLetterMessageAsync(failedMessage, row.Reason, row.Message);
+                    }
+                }
+
+                foreach (var message in messages)
+                {
+                    try
+                    {
+                        await serviceBusReceiver.CompleteMessageAsync(message);
+                    }
+                    catch (Exception ex) {
+                        _logger.LogInformation($"Unable to complete message: {ex.Message}");
+                    }
                 }
 
             }
             catch (Exception ex)
             {
-                foreach (var message in messages)
-                {
-                    await serviceBusReceiver.DeadLetterMessageAsync(message,ex.Message,ex.StackTrace);
-                }
                 _logger.LogCritical($"Entity Name: {queueName}");
                 _logger.LogCritical(ex.ToString());
                 throw;
