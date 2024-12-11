@@ -13,7 +13,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 
-namespace SendToBQ
+namespace CRMMessageProcessor
 {
     public class RefreshBQMetadata
     {

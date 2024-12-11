@@ -125,30 +125,8 @@ namespace CRMMessageProcessor
             {
                 _logger.LogCritical($"Message failed");
                 Random rng = new();
-                int retryCount = 0;
+                await requeueSender.ScheduleMessageAsync(new ServiceBusMessage(message), DateTime.UtcNow.AddMinutes(rng.Next(1, 30)));
 
-                // Check if the message already has a retry count set in ApplicationProperties
-                if (message.ApplicationProperties.ContainsKey("RetryCount"))
-                {
-                    retryCount = (int)message.ApplicationProperties["RetryCount"];
-                }
-
-                // If the retry count exceeds the maximum allowed retries, dead-letter the message
-                if (retryCount >= 10)
-                {
-                    // Handle the message, e.g., move to dead-letter queue
-                    await messageActions.DeadLetterMessageAsync(message, ex.Message,ex.StackTrace);
-                }
-                else
-                {
-                    // Increment the retry count and reschedule the message
-                    message.ApplicationProperties["RetryCount"] = retryCount + 1;
-
-                    // Reschedule the message to run after a delay (e.g., 5 minutes)
-                    await requeueSender.ScheduleMessageAsync(new ServiceBusMessage(message), DateTime.UtcNow.AddMinutes(rng.Next(1, 30)));
-                }
-
-                                
             }
 
         }
