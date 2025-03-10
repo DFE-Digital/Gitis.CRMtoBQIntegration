@@ -9,7 +9,6 @@ using System.Collections.Generic;
 using System.Linq;
 using System.ServiceModel.Channels;
 using System.Threading.Tasks;
-using static System.Runtime.InteropServices.JavaScript.JSType;
 
 namespace SendToBQ.Processor
 {
@@ -29,41 +28,19 @@ namespace SendToBQ.Processor
         {
             ServiceBusReceiver serviceBusReceiver = new ServiceBusClient(CrmToBqConnection).CreateReceiver(queueName);
 
-            var messages = await serviceBusReceiver.ReceiveMessagesAsync(1000);            
-
-            string msgType = "";
-            string entityID = "";
-            string entityName = "";
+            var messages = await serviceBusReceiver.ReceiveMessagesAsync(100);
+           
+            _logger.LogInformation($" messages count: {messages.Count}");
 
             try
             {
                 var rows = new List<BigQueryInsertRow>();
                 foreach (var message in messages)
                 {
-                    var context = JsonConvert.DeserializeObject<ServiceBusBQ>(message.Body.ToString());
-                    msgType = context.MessageType;
-                    entityID = context.Id;
-                    entityName = context.LogicalName;
-                    string primarykey = entityName + "id";
-
-                    _logger.LogInformation($" message name: {context.MessageType}");
-                    _logger.LogInformation($" Primary Entity ID: {context.Id}");
-                    _logger.LogInformation($" Primary Entity Name: {context.LogicalName}");
+                    var context = JsonConvert.DeserializeObject<ServiceBusBQ>(message.Body.ToString());                    
 
                     try
-                    {
-
-                        //if (msgType == "Create" || msgType == "Update")
-                        //{
-                        //    var keyValueFields = context.Fields.ToDictionary(x => x.Key, x => x.Value);
-                        //    rows.Add([keyValueFields]);
-
-                        //}
-                        //else if (msgType == "Delete")
-                        //{
-                        //    var keyValueFields = context.Fields.ToDictionary(x => x.Key, x => x.Value);
-                        //    rows.Add([keyValueFields]);
-                        //}
+                    {                      
 
                         var keyValueFields = context.Fields.ToDictionary(x => x.Key, x => x.Value);
                         rows.Add([keyValueFields]);
@@ -73,35 +50,55 @@ namespace SendToBQ.Processor
                         await serviceBusReceiver.DeadLetterMessageAsync(message, $"Prevalidate - {ex.Message}", ex.StackTrace);
                     }
                 }
-
-                var bigQueryInsertResult = await _bigQueryClient.InsertRowsAsync(projectId, datasetId, entityName, rows.ToArray());
-
-                var errors = bigQueryInsertResult.Errors;
-
-                _logger.LogCritical($"Errors: {errors.Count()}");
-
-                foreach (var error in errors)
+                InsertOptions options = new()
                 {
-                    var failedMessage = messages[(int)error.OriginalRowIndex];
+                    SkipInvalidRows = true
+                };
 
-                    _logger.LogCritical($"Error message index: {(int)error.OriginalRowIndex}");
+                var bigQueryInsertResult = await _bigQueryClient.InsertRowsAsync(projectId, datasetId, queueName, rows.ToArray(), options);
 
-                    foreach (var row in error)
+                if (bigQueryInsertResult.Status == BigQueryInsertStatus.SomeRowsInserted)
+                {
+                    var errors = bigQueryInsertResult.Errors.ToList();
+
+                    _logger.LogCritical($"Errors: {errors.Count()}");
+
+                    for (int i = 0; messages.Count < i; i++)
                     {
-                        await serviceBusReceiver.DeadLetterMessageAsync(failedMessage, row.Reason, row.Message);
+                        if (errors.Any(x => x.OriginalRowIndex == i))
+                        {
+                            var failedMessage = messages[i];
+
+                            _logger.LogCritical($"Error message index: {i}");
+                            foreach (var row in errors.FirstOrDefault(x => x.OriginalRowIndex == i))
+                            {
+                                await serviceBusReceiver.DeadLetterMessageAsync(failedMessage, row.Reason, row.Message);
+                            }
+                        }
+                        else
+                        {
+                            var message = messages[i];
+                            await serviceBusReceiver.CompleteMessageAsync(message);
+                        }
+
+                    }
+                    
+                }
+                else if (bigQueryInsertResult.Status == BigQueryInsertStatus.NoRowsInserted)
+                {
+                    foreach (var message in messages)
+                    {
+                        await serviceBusReceiver.DeadLetterMessageAsync(message);
                     }
                 }
-
-                foreach (var message in messages)
+                else
                 {
-                    try
+                    foreach (var message in messages)
                     {
                         await serviceBusReceiver.CompleteMessageAsync(message);
                     }
-                    catch (Exception ex) {
-                        _logger.LogInformation($"Unable to complete message: {ex.Message}");
-                    }
                 }
+                
 
             }
             catch (Exception ex)

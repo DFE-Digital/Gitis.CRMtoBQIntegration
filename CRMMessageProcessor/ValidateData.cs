@@ -3,9 +3,7 @@ using Google.Apis.Auth.OAuth2;
 using Google.Cloud.BigQuery.V2;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
-using Microsoft.PowerPlatform.Dataverse.Client;
 using Microsoft.Xrm.Sdk;
-using Microsoft.Xrm.Sdk.Query;
 using Newtonsoft.Json;
 using CRMMessageProcessor.DTO;
 using System;
@@ -23,7 +21,7 @@ namespace CRMMessageProcessor
 
         private static readonly string projectId = Environment.GetEnvironmentVariable("projectId");
         private static readonly string datasetId = Environment.GetEnvironmentVariable("datasetId");
-        private static readonly string d365Environment = Environment.GetEnvironmentVariable("d365Environment");
+        //private static readonly string d365Environment = Environment.GetEnvironmentVariable("d365Environment");
         private static readonly string sUserKey = Environment.GetEnvironmentVariable("userkey");
         private static readonly string sUserPassword = Environment.GetEnvironmentVariable("userpassword");
         private static readonly string clientid = Environment.GetEnvironmentVariable("clientId");
@@ -41,21 +39,24 @@ namespace CRMMessageProcessor
         private static readonly string sbconnection = Environment.GetEnvironmentVariable("sbconnection");
         private static readonly string CrmToBqConnection = Environment.GetEnvironmentVariable("CrmToBqConnection");
         private static readonly string sbtopicname = Environment.GetEnvironmentVariable("sbtopicname");
+        private static readonly string tableStorageString = Environment.GetEnvironmentVariable("tableStorageString");
+        //bqtableconfigs
         //public static Dictionary<string, List<string>> bigQueryCache = [];
         private readonly ILogger<ValidateData> _logger;
+        private readonly TableService _tableService;
 
         public ValidateData(ILogger<ValidateData> logger)
         {
             _logger = logger;
+            _tableService = new(tableStorageString, "bqtableconfigs");
         }
 
         [Function(nameof(ValidateData))]
         public async Task Run([ServiceBusTrigger("datafromcrm", "subscriptionbq", Connection = "sbconnection")] ServiceBusReceivedMessage message,
         ServiceBusMessageActions messageActions)
         {
-            _logger.LogInformation($"C# ServiceBus topic trigger function processed message: {message.Body.ToString()}");
-            
-            ServiceBusSender requeueSender = new ServiceBusClient(CrmToBqConnection).CreateSender("datafromcrm");
+            _logger.LogInformation($"Start");
+            ServiceBusSender requeueSender = new ServiceBusClient(sbconnection).CreateSender("datafromcrm");
 
             string msgtype = "";
             string entityID = "";
@@ -72,63 +73,69 @@ namespace CRMMessageProcessor
                 entityID = context.PrimaryEntityId.ToString();
                 entityName = context.PrimaryEntityName;
                 var validatedQueueSender = new ServiceBusClient(CrmToBqConnection).CreateSender(entityName);
+                
+                Entity entity = context.PostEntityImages.Contains("PostImage") ? context.PostEntityImages["PostImage"] : context.PostEntityImages.Contains("PreImage") ? context.PreEntityImages["PreImage"] : null;
 
-                var entity = context.MessageName != "Delete" ? await GetEntity(entityID, entityName) : new Entity(context.PrimaryEntityName,context.PrimaryEntityId);
-
-                var configEntity = await GetBigQueryConfig(context.PrimaryEntityName);                
-
-                var param = new JsonCredentialParameters
+                if (entity != null)
                 {
-                    Type = gtype,
-                    ProjectId = gproject_id,
-                    PrivateKeyId = gprivate_key_id,
-                    PrivateKey = gprivate_key,
-                    ClientEmail = gclient_email,
-                    ClientId = gclient_id,
-                    TokenUrl = gtoken_uri
-                };
 
-                var googlecredentials = GoogleCredential.FromJsonParameters(param);
-                var bigQueryClient = await BigQueryClient.CreateAsync(projectId, googlecredentials);
-                _logger.LogInformation($"BigQueryClient initiated for projectId {projectId}");
+                    //var configEntity = await GetBigQueryConfig(context.PrimaryEntityName);
+                    var configEntity = _tableService.GetEntity<BQTableConfig>("dfe_bigquerytableconfig", context.PrimaryEntityName);
 
-                ServiceBusBQ serviceBusBQ = null;
-                var entityFields = new List<Field>();
-                if (configEntity != null)
-                {
-                    switch (msgtype)
+                    _logger.LogInformation($"Received config");
+
+                    var param = new JsonCredentialParameters
                     {
-                        case "Create":
-                        case "Update":
-                            entityFields = await GetEntityAndFields(entity, configEntity);
-                            if (entityFields.Count > 0)
-                            {
-                                serviceBusBQ = new ServiceBusBQ { MessageType = msgtype, Id = entityID, LogicalName = entityName, Fields = entityFields };
-                                await validatedQueueSender.SendMessageAsync(new ServiceBusMessage(JsonConvert.SerializeObject(serviceBusBQ)));
-                            }
-                            break;
-                        case "Delete":
-                            entityFields.Add(new Field { Key = "id", Value = context.PrimaryEntityId });
-                            entityFields.Add(new Field { Key = $"{context.PrimaryEntityName}id", Value = context.PrimaryEntityId });
-                            entityFields.Add(new Field { Key = "statecode", Value = "Deleted" });
-                            entityFields.Add(new Field { Key = "statuscode", Value = "Deleted" });
-                            entityFields.Add(new Field { Key = "modifiedon", Value = DateTime.UtcNow.ToString("yyyy'-'MM'-'dd'T'HH':'mm':'ss'.'fff'Z'") });
-                            entityFields.Add(new Field { Key = "modifiedby", Value = context.UserId.ToString() });
-                            serviceBusBQ = new ServiceBusBQ { MessageType = msgtype, Id = entityID, LogicalName = entityName, Fields = entityFields };
-                            await validatedQueueSender.SendMessageAsync(new ServiceBusMessage(JsonConvert.SerializeObject(serviceBusBQ)));
-                            break;
+                        Type = gtype,
+                        ProjectId = gproject_id,
+                        PrivateKeyId = gprivate_key_id,
+                        PrivateKey = gprivate_key,
+                        ClientEmail = gclient_email,
+                        ClientId = gclient_id,
+                        TokenUrl = gtoken_uri
+                    };
+
+                    var googlecredentials = GoogleCredential.FromJsonParameters(param);
+                    var bigQueryClient = await BigQueryClient.CreateAsync(projectId, googlecredentials);
+                    _logger.LogInformation($"BigQueryClient initiated for projectId {projectId}");
+
+                    ServiceBusBQ serviceBusBQ = null;
+                    var entityFields = await GetEntityAndFields(entity, configEntity);
+                    if (configEntity != null)
+                    {
+                        switch (msgtype)
+                        {
+                            case "Create":
+                            case "Update":
+                                if (entityFields.Count > 0)
+                                {
+                                    serviceBusBQ = new ServiceBusBQ { MessageType = msgtype, Id = entityID, LogicalName = entityName, Fields = entityFields };
+                                    await validatedQueueSender.SendMessageAsync(new ServiceBusMessage(JsonConvert.SerializeObject(serviceBusBQ)));
+                                }
+                                break;
+                            case "Delete":
+                                if (entityFields.Count > 0)
+                                {
+                                    entityFields.RemoveAll(x => (x.Key == "statecode" || x.Key == "statuscode"));
+                                    entityFields.Add(new Field { Key = "statecode", Value = "Deleted" });
+                                    entityFields.Add(new Field { Key = "statuscode", Value = "Deleted" });
+                                    serviceBusBQ = new ServiceBusBQ { MessageType = msgtype, Id = entityID, LogicalName = entityName, Fields = entityFields };
+                                    await validatedQueueSender.SendMessageAsync(new ServiceBusMessage(JsonConvert.SerializeObject(serviceBusBQ)));
+                                }
+                                break;
+                        }
                     }
                 }
 
             }            
             catch (Exception ex)
             {
-                _logger.LogCritical($"Message failed");
+                _logger.LogCritical($"Message failed: {ex.Message}");
                 Random rng = new();
                 await requeueSender.ScheduleMessageAsync(new ServiceBusMessage(message), DateTime.UtcNow.AddMinutes(rng.Next(1, 30)));
+                //await messageActions.DeadLetterMessageAsync(message,deadLetterReason: ex.Message,deadLetterErrorDescription: ex.StackTrace);
 
-            }
-
+            }            
         }
 
         private static dynamic GetValueForAttribute(string attribute, Entity entity)
@@ -145,7 +152,7 @@ namespace CRMMessageProcessor
                     case string strValue:
                         if (attributeValue.ToString().Contains("Date("))
                         {
-                            string jsonDate = attributeValue.ToString().Replace("Date(", "").Replace(")", "").Split("+")[0];
+                            string jsonDate = attributeValue.ToString().Replace("Date(", "").Replace(")", "").Replace("/","").Split("+")[0];
                             long milliseconds = long.Parse(jsonDate);
                             return DateTimeOffset.FromUnixTimeMilliseconds(milliseconds).DateTime.ToUniversalTime().ToString("yyyy'-'MM'-'dd'T'HH':'mm':'ss'.'fff'Z'");
                         }
@@ -201,12 +208,12 @@ namespace CRMMessageProcessor
                 throw;
             }
         }
-        public static async Task<List<Field>> GetEntityAndFields(Entity entity, Entity configEntity)
+        public static async Task<List<Field>> GetEntityAndFields(Entity entity, BQTableConfig configEntity)
         {
 
             List<string> fields = new List<string>();
 
-            fields = DeserializeJsonString<List<string>>(configEntity.GetAttributeValue<string>("dfe_tablejson"));
+            fields = DeserializeJsonString<List<string>>(configEntity.TableJSON);
 
             var keyValuePair = new KeyValuePair<string, List<string>>(entity.LogicalName, fields);
 
@@ -226,48 +233,5 @@ namespace CRMMessageProcessor
             return obj;
         }
 
-        private static void CreateConfig(Entity entity)
-        {
-            using var svc = new ServiceClient($@"AuthType=ClientSecret;Url={d365Environment};ClientId={clientid};ClientSecret={clientsecret}");
-            svc.Create(entity);
-        }
-
-        private async Task<Entity> GetBigQueryConfig(string entityName)
-        {
-            using var svc = new ServiceClient($@"AuthType=ClientSecret;Url={d365Environment};ClientId={clientid};ClientSecret={clientsecret}");
-
-            var query = new QueryExpression("dfe_bigquerytableconfig");
-
-            query.ColumnSet.AllColumns = true;
-
-            query.Criteria.AddCondition("dfe_name", ConditionOperator.Equal, entityName);
-
-            var entityCollection = await svc.RetrieveMultipleAsync(query);
-            //_logger.LogInformation($"{entityCollection.TotalRecordCount} {entityName} config retrieved...");
-
-            if (entityCollection?.Entities.Count > 0)
-            {
-                return entityCollection.Entities.First();
-            }
-            else
-            {
-                return null;
-            }
-        }
-
-        private async Task<Entity> GetEntity(string entityId, string entityName)
-        {
-            using (var svc = new ServiceClient($@"AuthType=ClientSecret;Url={d365Environment};ClientId={clientid};ClientSecret={clientsecret}"))
-            {               
-
-                var entId = new Guid(entityId);
-
-                var entity = await svc.RetrieveAsync(entityName, entId, new ColumnSet(true));
-                _logger.LogInformation($"Entity - {entity.Id} retrieved...");
-                return entity;
-
-            }
-
-        }
     }
 }

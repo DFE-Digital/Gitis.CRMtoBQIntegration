@@ -1,4 +1,5 @@
-﻿using Google.Apis.Auth.OAuth2;
+﻿using CRMMessageProcessor.DTO;
+using Google.Apis.Auth.OAuth2;
 using Google.Cloud.BigQuery.V2;
 using Microsoft.Azure.Amqp.Framing;
 using Microsoft.Azure.Functions.Worker;
@@ -36,10 +37,12 @@ namespace CRMMessageProcessor
         private static readonly string gauth_provider_x509_cert_url = Environment.GetEnvironmentVariable("googlecredentials:auth_provider_x509_cert_url");
         private static readonly string gclient_x509_cert_url = Environment.GetEnvironmentVariable("googlecredentials:client_x509_cert_url");
         private static readonly string entities = Environment.GetEnvironmentVariable("tablenames");
-
+        private static readonly string tableStorageString = Environment.GetEnvironmentVariable("tableStorageString");
+        //bqtableconfigs
         //private static readonly string sbtopicname = Environment.GetEnvironmentVariable("sbtopicname");
         private readonly BigQueryClient _bigQueryClient;
         private readonly ILogger<RefreshBQMetadata> _logger;
+        private readonly TableService _tableService;
 
         public RefreshBQMetadata(ILogger<RefreshBQMetadata> logger)
         {
@@ -58,6 +61,7 @@ namespace CRMMessageProcessor
             var googlecredentials = GoogleCredential.FromJsonParameters(param);
             _bigQueryClient = BigQueryClient.Create(projectId, googlecredentials);
             _logger.LogInformation($"BigQueryClient initiated for projectId {projectId}");
+            _tableService = new(tableStorageString, "bqtableconfigs");
         }
 
         [Function(nameof(RefreshBQMetadata))]
@@ -84,15 +88,40 @@ namespace CRMMessageProcessor
                         }
                         var keyValuePair = new KeyValuePair<string, List<string>>("", fields);
 
-                        Entity newEntity = new Entity("dfe_bigquerytableconfig");
-                        newEntity["dfe_tablejson"] = JsonConvert.SerializeObject(fields);
-                        newEntity["dfe_name"] = table;
-                        CreateConfig(newEntity);
-
-                        if(configEntity != null)
+                        if (configEntity != null)
                         {
-                            DeleteConfig(configEntity);
+                            //DeleteConfig(configEntity);
+                            Entity updateEntity = new Entity("dfe_bigquerytableconfig", configEntity.Id);
+                            updateEntity["dfe_tablejson"] = JsonConvert.SerializeObject(fields);                            
+                            updateEntity["dfe_refreshfrombq"] = false;
+                            UpdateConfig(updateEntity);                            
                         }
+                        else
+                        {
+                            Entity newEntity = new Entity("dfe_bigquerytableconfig");
+                            newEntity["dfe_tablejson"] = JsonConvert.SerializeObject(fields);
+                            newEntity["dfe_name"] = table;
+                            CreateConfig(newEntity);
+                        }
+
+                        var tableStorageEntity = _tableService.GetEntity<BQTableConfig>("dfe_bigquerytableconfig", table);
+                        if (tableStorageEntity != null)
+                        {
+                            tableStorageEntity.TableJSON = JsonConvert.SerializeObject(fields); ;
+                            _tableService.UpdateEntity(tableStorageEntity);
+                        }
+                        else
+                        {
+                            _tableService.AddEntity(new DTO.BQTableConfig
+                            {
+                                PartitionKey = "dfe_bigquerytableconfig",
+                                RowKey = table,
+                                TableJSON = JsonConvert.SerializeObject(fields),
+                                TableName = table,
+                            });
+                        }
+
+
                     }
                 }
 
@@ -134,10 +163,10 @@ namespace CRMMessageProcessor
             svc.Create(entity);
         }
 
-        private static void DeleteConfig(Entity entity)
+        private static void UpdateConfig(Entity entity)
         {
             using var svc = new ServiceClient($@"AuthType=ClientSecret;Url={d365Environment};ClientId={clientid};ClientSecret={clientsecret}");
-            svc.Delete(entity.LogicalName, entity.Id);
+            svc.Update(entity);
         }
 
     }

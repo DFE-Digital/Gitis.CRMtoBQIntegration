@@ -10,7 +10,7 @@
   },
   "extensions": {
     "serviceBus": {
-      "maxConcurrentCalls": 50,
+      "maxConcurrentCalls": 10,
       "prefetchCount": 0
     }
   }
