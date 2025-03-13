@@ -1,0 +1,13 @@
+﻿################################################################################
+# This .gitignore file was automatically created by Microsoft(R) Visual Studio.
+################################################################################
+
+/SendToBQ/local.settings.json
+/.vs
+/obj
+/Properties/PublishProfiles
+/Properties/ServiceDependencies/GitisCRMBQ-PR - Web Deploy/profile.arm.json
+/SendToBQ/bin
+/SendToBQ/obj
+/SendToBQ/Properties
+/CRMMessageProcessor/Properties
