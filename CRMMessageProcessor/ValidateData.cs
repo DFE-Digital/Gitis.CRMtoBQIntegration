@@ -22,8 +22,8 @@ namespace CRMMessageProcessor
         private static readonly string projectId = Environment.GetEnvironmentVariable("projectId");
         private static readonly string datasetId = Environment.GetEnvironmentVariable("datasetId");
         //private static readonly string d365Environment = Environment.GetEnvironmentVariable("d365Environment");
-        private static readonly string sUserKey = Environment.GetEnvironmentVariable("userkey");
-        private static readonly string sUserPassword = Environment.GetEnvironmentVariable("userpassword");
+        //private static readonly string sUserKey = Environment.GetEnvironmentVariable("userkey");
+        //private static readonly string sUserPassword = Environment.GetEnvironmentVariable("userpassword");
         private static readonly string clientid = Environment.GetEnvironmentVariable("clientId");
         private static readonly string clientsecret = Environment.GetEnvironmentVariable("clientSecret");
         private static readonly string gtype = Environment.GetEnvironmentVariable("googlecredentials:type");
@@ -38,7 +38,7 @@ namespace CRMMessageProcessor
         private static readonly string gclient_x509_cert_url = Environment.GetEnvironmentVariable("googlecredentials:client_x509_cert_url");
         private static readonly string sbconnection = Environment.GetEnvironmentVariable("sbconnection");
         private static readonly string CrmToBqConnection = Environment.GetEnvironmentVariable("CrmToBqConnection");
-        private static readonly string sbtopicname = Environment.GetEnvironmentVariable("sbtopicname");
+        //private static readonly string sbtopicname = Environment.GetEnvironmentVariable("sbtopicname");
         private static readonly string tableStorageString = Environment.GetEnvironmentVariable("tableStorageString");
         //bqtableconfigs
         //public static Dictionary<string, List<string>> bigQueryCache = [];
