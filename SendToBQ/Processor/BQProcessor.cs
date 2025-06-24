@@ -26,7 +26,11 @@ namespace SendToBQ.Processor
         }
         public async Task Process(string queueName)
         {
-            ServiceBusReceiver serviceBusReceiver = new ServiceBusClient(CrmToBqConnection).CreateReceiver(queueName);
+            ServiceBusClient sbClient = new ServiceBusClient(CrmToBqConnection);
+
+            ServiceBusReceiver serviceBusReceiver = sbClient.CreateReceiver(queueName);
+
+            ServiceBusSender serviceBusSender = sbClient.CreateSender(queueName);
 
             var messages = await serviceBusReceiver.ReceiveMessagesAsync(100);
            
@@ -47,7 +51,8 @@ namespace SendToBQ.Processor
                     }
                     catch (Exception ex)
                     {
-                        await serviceBusReceiver.DeadLetterMessageAsync(message, $"Prevalidate - {ex.Message}", ex.StackTrace);
+                        //await serviceBusReceiver.DeadLetterMessageAsync(message, $"Prevalidate - {ex.Message}", ex.StackTrace);
+                        await serviceBusSender.SendMessageAsync(new ServiceBusMessage(message));
                     }
                 }
                 InsertOptions options = new()
@@ -72,7 +77,8 @@ namespace SendToBQ.Processor
                             _logger.LogCritical($"Error message index: {i}");
                             foreach (var row in errors.FirstOrDefault(x => x.OriginalRowIndex == i))
                             {
-                                await serviceBusReceiver.DeadLetterMessageAsync(failedMessage, row.Reason, row.Message);
+                                
+                                await serviceBusSender.SendMessageAsync(new ServiceBusMessage(failedMessage));
                             }
                         }
                         else
@@ -88,7 +94,7 @@ namespace SendToBQ.Processor
                 {
                     foreach (var message in messages)
                     {
-                        await serviceBusReceiver.DeadLetterMessageAsync(message);
+                        await serviceBusSender.SendMessageAsync(new ServiceBusMessage(message));
                     }
                 }
                 else

@@ -74,7 +74,7 @@ namespace CRMMessageProcessor
                 entityName = context.PrimaryEntityName;
                 var validatedQueueSender = new ServiceBusClient(CrmToBqConnection).CreateSender(entityName);
                 
-                Entity entity = context.PostEntityImages.Contains("PostImage") ? context.PostEntityImages["PostImage"] : context.PostEntityImages.Contains("PreImage") ? context.PreEntityImages["PreImage"] : null;
+                Entity entity = context.PostEntityImages.Contains("PostImage") ? context.PostEntityImages["PostImage"] : context.PreEntityImages.Contains("PreImage") ? context.PreEntityImages["PreImage"] : null;
 
                 if (entity != null)
                 {

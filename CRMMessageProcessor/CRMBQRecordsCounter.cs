@@ -1,13 +1,18 @@
 using Google.Apis.Auth.OAuth2;
+using Google.Apis.Bigquery.v2.Data;
 using Google.Cloud.BigQuery.V2;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Microsoft.PowerPlatform.Dataverse.Client;
 using Microsoft.Xrm.Sdk;
 using Microsoft.Xrm.Sdk.Query;
 using System;
+using System.Collections;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using static System.Runtime.InteropServices.JavaScript.JSType;
 
 namespace CRMMessageProcessor
 {
@@ -24,12 +29,19 @@ namespace CRMMessageProcessor
         private static readonly string gprivate_key = Environment.GetEnvironmentVariable("googlecredentials:private_key");
         private static readonly string gclient_email = Environment.GetEnvironmentVariable("googlecredentials:client_email");
         private static readonly string gclient_id = Environment.GetEnvironmentVariable("googlecredentials:client_id");
+        //private static readonly string gauth_uri = Environment.GetEnvironmentVariable("googlecredentials:auth_uri");
         private static readonly string gtoken_uri = Environment.GetEnvironmentVariable("googlecredentials:token_uri");
+        //private static readonly string gauth_provider_x509_cert_url = Environment.GetEnvironmentVariable("googlecredentials:auth_provider_x509_cert_url");
+        //private static readonly string gclient_x509_cert_url = Environment.GetEnvironmentVariable("googlecredentials:client_x509_cert_url");
         private static readonly string entities = Environment.GetEnvironmentVariable("tablenames");
-        private static readonly string tableStorageString = Environment.GetEnvironmentVariable("tableStorageString");
+        //private static readonly string tableStorageString = Environment.GetEnvironmentVariable("tableStorageString");
         private readonly BigQueryClient _bigQueryClient;
         private readonly ILogger<CRMBQRecordsCounter> _logger;
-        private readonly TableService _tableService;
+        //private readonly TableService _tableService;
+
+        /*--BQ Table specs---*/
+        private static readonly string bqAnalyticsTable = Environment.GetEnvironmentVariable("bqAnalyticsTable");
+        private static readonly string bqAnalyticsDataset = Environment.GetEnvironmentVariable("bqAnalyticsDataset");
 
         public CRMBQRecordsCounter(ILoggerFactory loggerFactory)
         {
@@ -49,7 +61,7 @@ namespace CRMMessageProcessor
             var googlecredentials = GoogleCredential.FromJsonParameters(param);
             _bigQueryClient = BigQueryClient.Create(projectId, googlecredentials);
             _logger.LogInformation($"BigQueryClient initiated for projectId {projectId}");
-            _tableService = new(tableStorageString, "crmbqtablerecordcount");
+            //_tableService = new(tableStorageString, "crmbqtablerecordcount");
         }
 
         [Function("CRMBQRecordsCounter")]
@@ -68,7 +80,7 @@ namespace CRMMessageProcessor
                 {                    
                     var crm_count = GetTotalCountInGitis(table, startDateTime, endDateTime);
 
-                    string queryBQ = $"SELECT\r\n  COUNT(*) AS count\r\nFROM (\r\n  SELECT\r\n    DISTINCT id,\r\n    MAX(modifiedon) OVER (PARTITION BY id) AS max_timestamp,\r\n  FROM\r\n    `{projectId}.{datasetId}.{table}` )\r\nWHERE\r\n  DATETIME(max_timestamp) >= DATETIME({startDateTime.Year}, {startDateTime.Month}, {startDateTime.Day}, {startDateTime.Hour}, {startDateTime.Minute}, 0)\r\n  AND DATETIME(max_timestamp) <= DATETIME({endDateTime.Year}, {endDateTime.Month}, {endDateTime.Day}, {endDateTime.Hour}, {endDateTime.Minute}, 0)";
+                    string queryBQ = $"SELECT\r\n  COUNT(*) AS count\r\nFROM (\r\n  SELECT\r\n    DISTINCT id,\r\n    MAX(modifiedon) OVER (PARTITION BY id) AS max_timestamp,\r\n  FROM\r\n    `{projectId}.{datasetId}.{table}` )\r\nWHERE\r\n  DATETIME(max_timestamp) >= DATETIME({startDateTime.Year}, {startDateTime.Month}, {startDateTime.Day}, {startDateTime.Hour}, {startDateTime.Minute}, 0)\r\n  AND DATETIME(max_timestamp) <= DATETIME({endDateTime.Year}, {endDateTime.Month}, {endDateTime.Day}, {endDateTime.Hour}, {endDateTime.Minute}, 59)";
 
                     _logger.LogInformation($"{queryBQ}");
                     var results = await _bigQueryClient.CreateQueryJobAsync(queryBQ, parameters: null);
@@ -78,16 +90,29 @@ namespace CRMMessageProcessor
                         bqCount = results.GetQueryResults().Select(x => x["count"].ToString()).First();
                     }
 
-                    _tableService.AddEntity(new DTO.CRMBQMetric
-                    {
-                        PartitionKey = table,
-                        RowKey = Guid.NewGuid().ToString(),
-                        BQ_Count = bqCount,
-                        CRM_Count = crm_count.ToString(),
-                        Start_Time = startDateTime,
-                        End_Time = endDateTime
-                    });
-                    
+                    //_tableService.AddEntity(new DTO.CRMBQMetric
+                    //{
+                    //    PartitionKey = table,
+                    //    RowKey = Guid.NewGuid().ToString(),
+                    //    BQ_Count = bqCount,
+                    //    CRM_Count = crm_count.ToString(),
+                    //    Start_Time = startDateTime,
+                    //    End_Time = endDateTime
+                    //});
+
+
+                    BigQueryInsertRow row = new BigQueryInsertRow();
+
+                    row.Add("entity_name", table);
+                    row.Add("crm_count", crm_count);
+                    row.Add("bq_count", int.Parse(bqCount));
+                    row.Add("date_to", endDateTime);
+                    row.Add("date_from", startDateTime);
+                    row.Add("count_difference", crm_count - int.Parse(bqCount));                 
+
+                    var bigQueryInsertResult = await _bigQueryClient.InsertRowAsync(projectId, bqAnalyticsDataset, bqAnalyticsTable, row);
+
+
                 }
                 if (myTimer.ScheduleStatus is not null)
                 {
