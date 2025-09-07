@@ -14,27 +14,30 @@ namespace SendToBQ.Processor
 {
     public class BQProcessor
     {
-        private static readonly string CrmToBqConnection = Environment.GetEnvironmentVariable("CrmToBqConnection");
+        //private static readonly string CrmToBqConnection = Environment.GetEnvironmentVariable("CrmToBqConnection");
         private static readonly string projectId = Environment.GetEnvironmentVariable("projectId");
         private static readonly string datasetId = Environment.GetEnvironmentVariable("datasetId");
-        private readonly BigQueryClient _bigQueryClient;
-        private readonly ILogger _logger;
-        public BQProcessor(BigQueryClient bigQueryClient, ILogger logger) { 
-        
-            _bigQueryClient = bigQueryClient;
-            _logger = logger;
+        private readonly BigQueryClient _bq;
+        private readonly ILogger _log;      
+        private readonly ServiceBusFactory _sb;
+
+        public BQProcessor(BigQueryClient bigQueryClient, ServiceBusFactory sbFactory, ILogger<BQProcessor> logger)
+        {
+            _bq = bigQueryClient;
+            _sb = sbFactory;
+            _log = logger;
         }
         public async Task Process(string queueName)
         {
-            ServiceBusClient sbClient = new ServiceBusClient(CrmToBqConnection);
+            var receiver = _sb.GetReceiver(queueName);
+            var messages = await receiver.ReceiveMessagesAsync(1000);
 
-            ServiceBusReceiver serviceBusReceiver = sbClient.CreateReceiver(queueName);
 
-            ServiceBusSender serviceBusSender = sbClient.CreateSender(queueName);
+            ServiceBusSender serviceBusSender = _sb.GetSender(queueName);
 
-            var messages = await serviceBusReceiver.ReceiveMessagesAsync(100);
+            //var messages = await serviceBusReceiver.ReceiveMessagesAsync(100);
            
-            _logger.LogInformation($" messages count: {messages.Count}");
+            _log.LogInformation($" messages count: {messages.Count}");
 
             try
             {
@@ -51,8 +54,7 @@ namespace SendToBQ.Processor
                     }
                     catch (Exception ex)
                     {
-                        //await serviceBusReceiver.DeadLetterMessageAsync(message, $"Prevalidate - {ex.Message}", ex.StackTrace);
-                        await serviceBusSender.SendMessageAsync(new ServiceBusMessage(message));
+                        await receiver.DeadLetterMessageAsync(message, $"Prevalidate - {ex.Message}", ex.StackTrace);
                     }
                 }
                 InsertOptions options = new()
@@ -60,13 +62,13 @@ namespace SendToBQ.Processor
                     SkipInvalidRows = true
                 };
 
-                var bigQueryInsertResult = await _bigQueryClient.InsertRowsAsync(projectId, datasetId, queueName, rows.ToArray(), options);
+                var bigQueryInsertResult = await _bq.InsertRowsAsync(projectId, datasetId, queueName, rows.ToArray(), options);
 
                 if (bigQueryInsertResult.Status == BigQueryInsertStatus.SomeRowsInserted)
                 {
                     var errors = bigQueryInsertResult.Errors.ToList();
 
-                    _logger.LogCritical($"Errors: {errors.Count()}");
+                    _log.LogCritical($"Errors: {errors.Count()}");
 
                     for (int i = 0; messages.Count < i; i++)
                     {
@@ -74,7 +76,7 @@ namespace SendToBQ.Processor
                         {
                             var failedMessage = messages[i];
 
-                            _logger.LogCritical($"Error message index: {i}");
+                            _log.LogCritical($"Error message index: {i}");
                             foreach (var row in errors.FirstOrDefault(x => x.OriginalRowIndex == i))
                             {
                                 
@@ -84,7 +86,7 @@ namespace SendToBQ.Processor
                         else
                         {
                             var message = messages[i];
-                            await serviceBusReceiver.CompleteMessageAsync(message);
+                            await receiver.CompleteMessageAsync(message);
                         }
 
                     }
@@ -101,7 +103,7 @@ namespace SendToBQ.Processor
                 {
                     foreach (var message in messages)
                     {
-                        await serviceBusReceiver.CompleteMessageAsync(message);
+                        await receiver.CompleteMessageAsync(message);
                     }
                 }
                 
@@ -109,8 +111,8 @@ namespace SendToBQ.Processor
             }
             catch (Exception ex)
             {
-                _logger.LogCritical($"Entity Name: {queueName}");
-                _logger.LogCritical(ex.ToString());
+                _log.LogCritical($"Entity Name: {queueName}");
+                _log.LogCritical(ex.ToString());
                 throw;
             }
 

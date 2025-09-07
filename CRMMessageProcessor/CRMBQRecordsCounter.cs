@@ -65,14 +65,14 @@ namespace CRMMessageProcessor
         }
 
         [Function("CRMBQRecordsCounter")]
-        public async Task Run([TimerTrigger("0 15 0 * * *")] TimerInfo myTimer)
+        public async Task Run([TimerTrigger("0 30 6 * * *")] TimerInfo myTimer)
         {
             _logger.LogInformation($"Start: {DateTime.Now}");
 
             try
             {
-                var startDateTime = new DateTime(DateTime.Now.Year, DateTime.Now.Month, DateTime.Now.Day - 1, 0, 0, 0);
-                var endDateTime = new DateTime(DateTime.Now.Year, DateTime.Now.Month, DateTime.Now.Day - 1, 23, 59, 59);
+                var startDateTime = new DateTime(DateTime.Now.AddDays(-1).Year, DateTime.Now.AddDays(-1).Month, DateTime.Now.AddDays(-1).Day, 0, 0, 0);
+                var endDateTime = new DateTime(DateTime.Now.AddDays(-1).Year, DateTime.Now.AddDays(-1).Month, DateTime.Now.AddDays(-1).Day, 23, 59, 59);
 
                 var tables = entities.Split(",");
 
@@ -80,7 +80,7 @@ namespace CRMMessageProcessor
                 {                    
                     var crm_count = GetTotalCountInGitis(table, startDateTime, endDateTime);
 
-                    string queryBQ = $"SELECT\r\n  COUNT(*) AS count\r\nFROM (\r\n  SELECT\r\n    DISTINCT id,\r\n    MAX(modifiedon) OVER (PARTITION BY id) AS max_timestamp,\r\n  FROM\r\n    `{projectId}.{datasetId}.{table}` )\r\nWHERE\r\n  DATETIME(max_timestamp) >= DATETIME({startDateTime.Year}, {startDateTime.Month}, {startDateTime.Day}, {startDateTime.Hour}, {startDateTime.Minute}, 0)\r\n  AND DATETIME(max_timestamp) <= DATETIME({endDateTime.Year}, {endDateTime.Month}, {endDateTime.Day}, {endDateTime.Hour}, {endDateTime.Minute}, 59)";
+                    string queryBQ = $"SELECT\r\n  COUNT(*) AS count\r\nFROM (\r\n  SELECT\r\n    DISTINCT id,\r\n    MAX(createdon) OVER (PARTITION BY id) AS max_timestamp,\r\n  FROM\r\n    `{projectId}.{datasetId}.{table}` )\r\nWHERE\r\n  DATETIME(max_timestamp) >= DATETIME({startDateTime.Year}, {startDateTime.Month}, {startDateTime.Day}, {startDateTime.Hour}, {startDateTime.Minute}, 0)\r\n  AND DATETIME(max_timestamp) <= DATETIME({endDateTime.Year}, {endDateTime.Month}, {endDateTime.Day}, {endDateTime.Hour}, {endDateTime.Minute}, 59)";
 
                     _logger.LogInformation($"{queryBQ}");
                     var results = await _bigQueryClient.CreateQueryJobAsync(queryBQ, parameters: null);
@@ -149,7 +149,7 @@ namespace CRMMessageProcessor
                     Count = fetchCount
                 }
             };
-            query.Criteria.AddCondition("modifiedon", ConditionOperator.Between, query_createdon_1, query_createdon_2);
+            query.Criteria.AddCondition("createdon", ConditionOperator.Between, query_createdon_1, query_createdon_2);
 
             EntityCollection results;
 

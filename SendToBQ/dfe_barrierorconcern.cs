@@ -1,10 +1,5 @@
-using Azure.Messaging.ServiceBus;
-using Google.Apis.Auth.OAuth2;
-using Google.Cloud.BigQuery.V2;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
-using Newtonsoft.Json;
-using SendToBQ.DTO;
 using SendToBQ.Processor;
 using System;
 using System.Threading.Tasks;
@@ -13,64 +8,29 @@ namespace SendToBQ
 {
     public class dfe_barrierorconcern
     {
-
-        private static readonly string projectId = Environment.GetEnvironmentVariable("projectId");
-        private static readonly string datasetId = Environment.GetEnvironmentVariable("datasetId");
-        
-        private static readonly string gtype = Environment.GetEnvironmentVariable("googlecredentials:type");
-        private static readonly string gproject_id = Environment.GetEnvironmentVariable("googlecredentials:project_id");
-        private static readonly string gprivate_key_id = Environment.GetEnvironmentVariable("googlecredentials:private_key_id");
-        private static readonly string gprivate_key = Environment.GetEnvironmentVariable("googlecredentials:private_key");
-        private static readonly string gclient_email = Environment.GetEnvironmentVariable("googlecredentials:client_email");
-        private static readonly string gclient_id = Environment.GetEnvironmentVariable("googlecredentials:client_id");
-        private static readonly string gauth_uri = Environment.GetEnvironmentVariable("googlecredentials:auth_uri");
-        private static readonly string gtoken_uri = Environment.GetEnvironmentVariable("googlecredentials:token_uri");
-        private static readonly string gauth_provider_x509_cert_url = Environment.GetEnvironmentVariable("googlecredentials:auth_provider_x509_cert_url");
-        private static readonly string gclient_x509_cert_url = Environment.GetEnvironmentVariable("googlecredentials:client_x509_cert_url");
-        
-        
-        private static readonly string sbtopicname = Environment.GetEnvironmentVariable("sbtopicname");
-        private readonly BigQueryClient _bigQueryClient;
+        private readonly BQProcessor _processor;
         private readonly ILogger<dfe_barrierorconcern> _logger;
 
-        public dfe_barrierorconcern(ILogger<dfe_barrierorconcern> logger)
+        public dfe_barrierorconcern(BQProcessor processor, ILogger<dfe_barrierorconcern> logger)
         {
+            _processor = processor;
             _logger = logger;
-            var param = new JsonCredentialParameters
-            {
-                Type = gtype,
-                ProjectId = gproject_id,
-                PrivateKeyId = gprivate_key_id,
-                PrivateKey = gprivate_key,
-                ClientEmail = gclient_email,
-                ClientId = gclient_id,
-                TokenUrl = gtoken_uri
-            };
-
-            var googlecredentials = GoogleCredential.FromJsonParameters(param);
-            _bigQueryClient = BigQueryClient.Create(projectId, googlecredentials);
-            _logger.LogInformation($"BigQueryClient initiated for projectId {projectId}");
         }
 
-        [Function(nameof(dfe_barrierorconcern))]
-        public async Task Run([TimerTrigger("0 */1 * * * *")] TimerInfo timerInfo, FunctionContext context)
+        [Function("dfe_barrierorconcern")]
+        public async Task Run([TimerTrigger("0 */1 * * * *")] TimerInfo timerInfo)
         {
             try
             {
-
-                BQProcessor processor = new(_bigQueryClient, _logger);
-                await processor.Process("dfe_barrierorconcern");
-
+                _logger.LogInformation("dfe_barrierorconcern timer fired at {utc}", DateTimeOffset.UtcNow);
+                await _processor.Process("dfe_barrierorconcern");
             }
             catch (Exception ex)
             {
-
-                _logger.LogCritical($"Failed {nameof(dfe_barrierorconcern)} timer : {ex.Message}");
+                _logger.LogCritical(ex, "Failed dfe_barrierorconcern timer");
                 throw;
-
             }
-
         }
-
     }
 }
+

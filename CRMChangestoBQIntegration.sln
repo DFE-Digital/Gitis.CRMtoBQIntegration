@@ -5,9 +5,11 @@ VisualStudioVersion = 17.10.35013.160
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "SendCRMChangesToBQ_Testharness", "..\SendCRMChangesToBQ\SendCRMChangesToBQ_Testharness\SendCRMChangesToBQ_Testharness.csproj", "{EAC621A1-81C3-467E-9778-28898B40D55C}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SendToBQ", "SendToBQ\SendToBQ.csproj", "{B6339C6E-545C-43A6-868A-A0CF2B383209}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SendToBQ - Deprecated", "SendToBQ\SendToBQ - Deprecated.csproj", "{B6339C6E-545C-43A6-868A-A0CF2B383209}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CRMMessageProcessor", "CRMMessageProcessor\CRMMessageProcessor.csproj", "{EB288E4D-FD15-4442-9A53-15DCD670E7A7}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BQSender", "BQSender\BQSender.csproj", "{A918D603-7112-439F-908F-418C42FB1F3B}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -27,6 +29,10 @@ Global
 		{EB288E4D-FD15-4442-9A53-15DCD670E7A7}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{EB288E4D-FD15-4442-9A53-15DCD670E7A7}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{EB288E4D-FD15-4442-9A53-15DCD670E7A7}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A918D603-7112-439F-908F-418C42FB1F3B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A918D603-7112-439F-908F-418C42FB1F3B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A918D603-7112-439F-908F-418C42FB1F3B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A918D603-7112-439F-908F-418C42FB1F3B}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

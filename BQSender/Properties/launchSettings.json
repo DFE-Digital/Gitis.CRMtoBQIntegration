@@ -1,0 +1,9 @@
+{
+  "profiles": {
+    "BQSender": {
+      "commandName": "Project",
+      "commandLineArgs": "--port 7296",
+      "launchBrowser": false
+    }
+  }
+}
